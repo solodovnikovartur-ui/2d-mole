@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
+import Computer from "./components/Computer.vue";
 import GameHud from "./components/GameHud.vue";
+import Grid from "./components/Grid.vue";
+import Mole from "./components/Mole.vue";
+import Shops from "./components/Shops.vue";
 import { createInitialGameState, Game, type GameState } from "./game/Game";
 
 const gameState = ref<GameState>(createInitialGameState());
 
 let game: Game | null = null;
+
+function focusGame(): void {
+  (document.activeElement as HTMLElement | null)?.blur();
+}
 
 onMounted(() => {
   game = new Game((state) => {
@@ -20,8 +28,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="game-shell">
+  <div class="game-shell" @pointerdown="focusGame">
     <div class="game-world">
+      <Grid :state="gameState" />
+      <Shops :state="gameState" />
+      <Computer :state="gameState" />
+      <Mole :state="gameState" />
       <GameHud :state="gameState" />
     </div>
   </div>
