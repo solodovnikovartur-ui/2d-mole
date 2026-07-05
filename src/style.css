@@ -57,6 +57,11 @@ body {
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 6%);
 }
 
+.cell--deep-soil {
+  background: linear-gradient(180deg, #5a4530 0%, #3d2e1c 100%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 6%);
+}
+
 .cell--hard {
   background: linear-gradient(180deg, #5a5a68 0%, #3a3a48 100%);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
@@ -84,6 +89,57 @@ body {
   background:
     linear-gradient(45deg, transparent 44%, rgb(255 255 255 / 16%) 44%, rgb(255 255 255 / 16%) 56%, transparent 56%),
     linear-gradient(180deg, #8a9098 0%, #5a6068 100%);
+}
+
+.cell--diamond {
+  background: linear-gradient(180deg, #7ec8f0 0%, #3a8ab0 100%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%);
+}
+
+.cell--diamond-damaged {
+  background:
+    linear-gradient(135deg, transparent 45%, rgb(255 255 255 / 16%) 45%, rgb(255 255 255 / 16%) 55%, transparent 55%),
+    linear-gradient(180deg, #7ec8f0 0%, #3a8ab0 100%);
+}
+
+.cell--diamond-cracked {
+  background:
+    linear-gradient(45deg, transparent 44%, rgb(255 255 255 / 18%) 44%, rgb(255 255 255 / 18%) 56%, transparent 56%),
+    linear-gradient(180deg, #7ec8f0 0%, #3a8ab0 100%);
+}
+
+.cell--diamond-broken {
+  background:
+    linear-gradient(45deg, transparent 42%, rgb(255 255 255 / 22%) 42%, rgb(255 255 255 / 22%) 58%, transparent 58%),
+    linear-gradient(180deg, #7ec8f0 0%, #3a8ab0 100%);
+}
+
+.cell--sky-deep {
+  background: rgb(20 30 50 / 40%);
+  border-color: rgb(100 140 200 / 15%);
+}
+
+.cell--dark {
+  background-color: #050508 !important;
+  background-image: none !important;
+  box-shadow: inset 0 0 12px rgb(0 0 0 / 90%) !important;
+  border-color: rgb(255 255 255 / 3%) !important;
+}
+
+.cell--dark.cell--empty {
+  background: #050508 !important;
+}
+
+.cell--rope {
+  background:
+    repeating-linear-gradient(
+      180deg,
+      #c9a86c 0,
+      #c9a86c 4px,
+      #8b6914 4px,
+      #8b6914 8px
+    );
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
 }
 
 .cell--empty {
@@ -119,6 +175,15 @@ body {
   border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #9a7b68, #5c4033 70%);
   box-shadow: inset 0 -4px 0 rgb(0 0 0 / 20%);
+}
+
+.mole--deep .mole__body {
+  background: radial-gradient(circle at 35% 30%, #6a9fd8, #2a5080 70%);
+  box-shadow: inset 0 -4px 0 rgb(0 0 0 / 25%), 0 0 10px rgb(100 180 255 / 35%);
+}
+
+.mole--deep .mole__nose {
+  background: #a8c8f0;
 }
 
 .mole__nose {
@@ -199,6 +264,23 @@ body {
 .shop--deep {
   background: rgb(248 113 113 / 28%);
   box-shadow: 0 0 14px rgb(248 113 113 / 35%);
+  border-radius: 8px;
+  border: 2px solid rgb(255 255 255 / 30%);
+}
+
+.shop--lamp {
+  background: rgb(250 204 21 / 25%);
+  box-shadow: 0 0 14px rgb(250 204 21 / 30%);
+}
+
+.shop--rope {
+  background: rgb(180 130 70 / 28%);
+  box-shadow: 0 0 14px rgb(180 130 70 / 30%);
+}
+
+.shop--pickaxe4 {
+  background: rgb(147 197 253 / 28%);
+  box-shadow: 0 0 14px rgb(147 197 253 / 35%);
   border-radius: 8px;
   border: 2px solid rgb(255 255 255 / 30%);
 }
@@ -292,6 +374,14 @@ body {
 
 .hud__value--hard {
   color: #93c5fd;
+}
+
+.hud__value--iron {
+  color: #a8a8b0;
+}
+
+.hud__value--diamond {
+  color: #67e8f9;
 }
 
 .hud__shop-panel {

@@ -132,8 +132,9 @@ export function codeTypeLabel(type: CodeType): string {
 }
 
 export function createComputerPosition(viewportCols: number, surfaceRows: number): Vec2 {
+  const shaftCol = Math.floor(viewportCols / 2);
   return {
-    x: Math.floor(viewportCols / 2),
+    x: shaftCol <= 2 ? shaftCol + 2 : shaftCol - 2,
     y: surfaceRows - 1,
   };
 }

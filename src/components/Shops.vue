@@ -1,10 +1,25 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import type { DeepShopPositions } from "../game/grid";
 import type { GameState } from "../game/Game";
 
 const props = defineProps<{
   state: GameState;
 }>();
+
+const EMPTY_DEEP_SHOPS: DeepShopPositions = {
+  lamp: { x: 0, y: 0 },
+  rope: { x: 0, y: 0 },
+  pickaxe4: null,
+};
+
+const deepShops = computed(() => props.state.deepShops ?? EMPTY_DEEP_SHOPS);
+
+function isCellEmpty(col: number, row: number): boolean {
+  const rowData = props.state.blocks[row];
+  if (!rowData) return false;
+  return rowData[col] === 0;
+}
 
 function shopStyle(col: number, row: number) {
   const { cellSize, worldOffset } = props.state;
@@ -36,9 +51,28 @@ const pickaxeShopStyle = computed(() =>
 const deepShopStyle = computed(() => {
   const shop = props.state.shops.deepPickaxe;
   if (!shop) return null;
-  if (props.state.blocks[shop.y][shop.x] !== 0) return null;
+  if (!isCellEmpty(shop.x, shop.y)) return null;
   return deepShopCellStyle(shop.x, shop.y);
 });
+
+const lampShopStyle = computed(() => {
+  const shop = deepShops.value.lamp;
+  return shopStyle(shop.x, shop.y);
+});
+
+const ropeShopStyle = computed(() => {
+  const shop = deepShops.value.rope;
+  return shopStyle(shop.x, shop.y);
+});
+
+const pickaxe4ShopStyle = computed(() => {
+  const shop = deepShops.value.pickaxe4;
+  if (!shop) return null;
+  if (!isCellEmpty(shop.x, shop.y)) return null;
+  return deepShopCellStyle(shop.x, shop.y);
+});
+
+const showDeepShops = computed(() => Boolean(props.state.deepShops));
 </script>
 
 <template>
@@ -61,4 +95,26 @@ const deepShopStyle = computed(() => {
     <span class="shop__icon">⛏️</span>
     <span class="shop__label">3 ур.</span>
   </div>
+
+  <template v-if="showDeepShops">
+    <div class="shop shop--lamp" :style="lampShopStyle" title="Магазин ламп">
+      <span class="shop__icon">💡</span>
+      <span class="shop__label">Лампа</span>
+    </div>
+
+    <div class="shop shop--rope" :style="ropeShopStyle" title="Магазин верёвок">
+      <span class="shop__icon">🪢</span>
+      <span class="shop__label">Верёвка</span>
+    </div>
+
+    <div
+      v-if="pickaxe4ShopStyle && deepShops.pickaxe4"
+      class="shop shop--pickaxe4"
+      :style="pickaxe4ShopStyle"
+      title="Магазин кирок 4 уровня"
+    >
+      <span class="shop__icon">⛏️</span>
+      <span class="shop__label">4 ур.</span>
+    </div>
+  </template>
 </template>

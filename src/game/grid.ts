@@ -10,12 +10,18 @@ export const PICKAXE_HARD_COST = 5;
 export const PICKAXE_NORMAL_COST = 15;
 export const PICKAXE3_HARD_COST = 30;
 export const PICKAXE3_NORMAL_COST = 25;
+export const PICKAXE4_DIAMOND_COST = 20;
+export const PICKAXE4_IRON_COST = 30;
+export const LAMP_COST = 10;
+export const ROPE_COST = 10;
+export const LAMP_RADIUS = 4;
 
-/** 0 empty · 1 normal · 2 hard · 3 hard dmg · 4 iron · 5 iron dmg1 · 6 iron dmg2 */
-export type BlockCell = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+/** 0 empty · 1 normal · 2 hard · 3 hard dmg · 4–6 iron · 7–10 diamond */
+export type BlockCell = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export type Direction = "up" | "down" | "left" | "right";
-export type PickaxeLevel = 0 | 1 | 2;
+/** 0 обычная · 1 улучш. · 2 3 ур. · 3 4 ур. */
+export type PickaxeLevel = 0 | 1 | 2 | 3;
 
 export interface MoleState {
   col: number;
@@ -26,6 +32,8 @@ export interface MoleState {
 export interface Currency {
   normal: number;
   hard: number;
+  iron: number;
+  diamond: number;
 }
 
 export interface ShopPositions {
@@ -34,27 +42,47 @@ export interface ShopPositions {
   deepPickaxe: Vec2 | null;
 }
 
-/** Visible columns on screen (viewport width). */
-export function getViewportDimensions(width: number, height: number): { viewportCols: number; rows: number } {
+export interface DeepShopPositions {
+  lamp: Vec2;
+  rope: Vec2;
+  pickaxe4: Vec2 | null;
+}
+
+export function getViewportDimensions(width: number, height: number): { viewportCols: number; viewportRows: number } {
   return {
     viewportCols: Math.max(1, Math.floor(width / CELL_SIZE)),
-    rows: Math.max(1, Math.floor(height / CELL_SIZE)),
+    viewportRows: Math.max(1, Math.floor(height / CELL_SIZE)),
   };
 }
 
-/** @deprecated Use getViewportDimensions — kept for module compatibility. */
+/** @deprecated Use getViewportDimensions */
 export function getGridDimensions(width: number, height: number): { cols: number; rows: number } {
-  const { viewportCols, rows } = getViewportDimensions(width, height);
-  return { cols: viewportCols, rows };
+  const { viewportCols, viewportRows } = getViewportDimensions(width, height);
+  return { cols: viewportCols, rows: viewportRows };
 }
 
-/** Extra columns to the right of the viewport (off-screen iron lands). */
 export function getIronRegionExtraCols(viewportCols: number): number {
   return viewportCols;
 }
 
 export function getWorldCols(viewportCols: number): number {
   return viewportCols + getIronRegionExtraCols(viewportCols);
+}
+
+export function getDeepRegionExtraRows(viewportRows: number): number {
+  return viewportRows;
+}
+
+export function getWorldRows(viewportRows: number): number {
+  return viewportRows + getDeepRegionExtraRows(viewportRows);
+}
+
+export function getDeepRegionStartRow(viewportRows: number): number {
+  return viewportRows;
+}
+
+export function getDeepSurfaceRows(viewportRows: number): number {
+  return getSurfaceRows(getDeepRegionExtraRows(viewportRows));
 }
 
 export function getIronRegionStart(viewportCols: number): number {
@@ -65,19 +93,56 @@ export function isIronRegionCol(col: number, viewportCols: number): boolean {
   return col >= getIronRegionStart(viewportCols);
 }
 
+export function isIronBlockRow(row: number, surfaceRows: number): boolean {
+  return row >= surfaceRows + HARD_LAYER_DEPTH;
+}
+
+export function isIronUndergroundCell(
+  col: number,
+  row: number,
+  viewportCols: number,
+  surfaceRows: number,
+): boolean {
+  return (
+    isIronRegionCol(col, viewportCols) &&
+    row >= surfaceRows &&
+    isIronBlockRow(row, surfaceRows)
+  );
+}
+
+export function isDeepRegionRow(row: number, deepRegionStart: number): boolean {
+  return row >= deepRegionStart;
+}
+
+export function getShaftCol(viewportCols: number): number {
+  return Math.floor(viewportCols / 2);
+}
+
 export function getCameraCol(moleCol: number, viewportCols: number, worldCols: number): number {
   const maxCamera = Math.max(0, worldCols - viewportCols);
   if (maxCamera === 0) return 0;
-
   const centered = moleCol - Math.floor(viewportCols / 2);
   return Math.max(0, Math.min(centered, maxCamera));
 }
 
-export function getWorldOffset(width: number, viewportCols: number, cameraCol: number): Vec2 {
+export function getCameraRow(moleRow: number, viewportRows: number, worldRows: number): number {
+  const maxCamera = Math.max(0, worldRows - viewportRows);
+  if (maxCamera === 0) return 0;
+  const centered = moleRow - Math.floor(viewportRows / 2);
+  return Math.max(0, Math.min(centered, maxCamera));
+}
+
+export function getWorldOffset(
+  width: number,
+  viewportCols: number,
+  cameraCol: number,
+  _viewportRows: number,
+  cameraRow: number,
+): Vec2 {
   const viewportOffset = getGridOffset(width, viewportCols);
   return {
     x: viewportOffset.x - cameraCol * CELL_SIZE,
-    y: 0,
+    y: -cameraRow * CELL_SIZE,
   };
 }
 
@@ -87,18 +152,32 @@ export function getSurfaceRows(totalRows: number): number {
 
 export function getGridOffset(width: number, cols: number): Vec2 {
   const gridWidth = cols * CELL_SIZE;
-  return {
-    x: (width - gridWidth) / 2,
-    y: 0,
-  };
+  return { x: (width - gridWidth) / 2, y: 0 };
 }
 
 export function isSkyRow(row: number, surfaceRows: number): boolean {
   return row < surfaceRows;
 }
 
+export function isSkyAt(
+  row: number,
+  mainSurfaceRows: number,
+  deepRegionStart: number,
+  deepSurfaceRows: number,
+): boolean {
+  if (row < mainSurfaceRows) return true;
+  if (row >= deepRegionStart) {
+    return row - deepRegionStart < deepSurfaceRows;
+  }
+  return false;
+}
+
 export function isIronBlock(cell: BlockCell): boolean {
   return cell >= 4 && cell <= 6;
+}
+
+export function isDiamondBlock(cell: BlockCell): boolean {
+  return cell >= 7 && cell <= 10;
 }
 
 export function isHardBlock(cell: BlockCell): boolean {
@@ -113,16 +192,41 @@ export function ironHitsRemaining(cell: BlockCell): number {
 }
 
 export function ironDamagePerHit(pickaxeLevel: PickaxeLevel): number {
+  if (pickaxeLevel >= 3) return 3;
   if (pickaxeLevel >= 2) return 3;
   if (pickaxeLevel >= 1) return 2;
   return 1;
 }
 
 export function ironCellFromHitsRemaining(hits: number): BlockCell {
-  return (7 - hits) as BlockCell;
+  if (hits >= 3) return 4;
+  if (hits === 2) return 5;
+  return 6;
 }
 
-export function createBlockForCell(
+export function diamondHitsRemaining(cell: BlockCell): number {
+  if (cell === 7) return 4;
+  if (cell === 8) return 3;
+  if (cell === 9) return 2;
+  if (cell === 10) return 1;
+  return 0;
+}
+
+export function diamondDamagePerHit(pickaxeLevel: PickaxeLevel, hitsLeft: number): number {
+  if (pickaxeLevel >= 3) return 4;
+  if (pickaxeLevel >= 2) return 2;
+  if (pickaxeLevel >= 1) return hitsLeft >= 3 ? 2 : 1;
+  return 1;
+}
+
+export function diamondCellFromHitsRemaining(hits: number): BlockCell {
+  if (hits >= 4) return 7;
+  if (hits === 3) return 8;
+  if (hits === 2) return 9;
+  return 10;
+}
+
+function createMainBlock(
   col: number,
   row: number,
   viewportCols: number,
@@ -137,20 +241,99 @@ export function createBlockForCell(
   return 1;
 }
 
+function createDeepBlock(
+  _col: number,
+  row: number,
+  deepRegionStart: number,
+  deepSurfaceRows: number,
+): BlockCell {
+  const localRow = row - deepRegionStart;
+  if (localRow < deepSurfaceRows) return 0;
+  return 7;
+}
+
+export function isDeepUndergroundRow(
+  row: number,
+  deepRegionStart: number,
+  deepSurfaceRows: number,
+): boolean {
+  return isDeepRegionRow(row, deepRegionStart) && row - deepRegionStart >= deepSurfaceRows;
+}
+
+/** Старые сохранённые клетки земли (1) в глубоких землях считаем алмазом. */
+export function strikeCellType(
+  cell: BlockCell,
+  row: number,
+  deepRegionStart: number,
+  deepSurfaceRows: number,
+): BlockCell {
+  if (cell === 1 && isDeepUndergroundRow(row, deepRegionStart, deepSurfaceRows)) return 7;
+  return cell;
+}
+
+export function createBlockForCell(
+  col: number,
+  row: number,
+  viewportCols: number,
+  viewportRows: number,
+  mainSurfaceRows: number,
+): BlockCell {
+  const deepStart = getDeepRegionStartRow(viewportRows);
+  if (row >= deepStart) {
+    return createDeepBlock(col, row, deepStart, getDeepSurfaceRows(viewportRows));
+  }
+  return createMainBlock(col, row, viewportCols, mainSurfaceRows);
+}
+
 export function createSolidGrid(
   worldCols: number,
-  rows: number,
-  surfaceRows: number,
+  worldRows: number,
   viewportCols: number,
+  viewportRows: number,
+  mainSurfaceRows: number,
 ): BlockCell[][] {
-  return Array.from({ length: rows }, (_, row) =>
+  const blocks = Array.from({ length: worldRows }, (_, row) =>
     Array.from({ length: worldCols }, (_, col) =>
-      createBlockForCell(col, row, viewportCols, surfaceRows),
+      createBlockForCell(col, row, viewportCols, viewportRows, mainSurfaceRows),
     ),
   );
+  carveMineShaft(blocks, viewportCols, viewportRows, mainSurfaceRows);
+  return blocks;
+}
+
+export function carveMineShaft(
+  blocks: BlockCell[][],
+  viewportCols: number,
+  viewportRows: number,
+  _mainSurfaceRows: number,
+): void {
+  const shaftCol = getShaftCol(viewportCols);
+  const deepStart = getDeepRegionStartRow(viewportRows);
+  const deepSurfaceRows = getDeepSurfaceRows(viewportRows);
+  const deepSurfaceRow = deepStart + deepSurfaceRows - 1;
+
+  // Одно отверстие внизу основной карты — не труба с самого верха
+  if (deepStart > 0) {
+    blocks[deepStart - 1][shaftCol] = 0;
+  }
+
+  // Шахта только в небе глубоких земель (до поверхности шахты)
+  for (let row = deepStart; row <= deepSurfaceRow; row += 1) {
+    blocks[row][shaftCol] = 0;
+  }
+}
+
+export function getDeepMolePosition(viewportCols: number, viewportRows: number): Vec2 {
+  const deepStart = getDeepRegionStartRow(viewportRows);
+  const surfaceRow = deepStart + getDeepSurfaceRows(viewportRows) - 1;
+  return { x: getShaftCol(viewportCols), y: surfaceRow };
 }
 
 export function createEmptyLadders(cols: number, rows: number): boolean[][] {
+  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+}
+
+export function createEmptyRopes(cols: number, rows: number): boolean[][] {
   return Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
 }
 
@@ -163,17 +346,39 @@ export function createShopPositions(viewportCols: number, surfaceRows: number): 
   };
 }
 
+export function createDeepShops(
+  viewportCols: number,
+  viewportRows: number,
+  worldCols: number,
+  worldRows: number,
+): DeepShopPositions {
+  const deepStart = getDeepRegionStartRow(viewportRows);
+  const deepSurfaceRows = getDeepSurfaceRows(viewportRows);
+  const surfaceRow = deepStart + deepSurfaceRows - 1;
+  const shaftCol = getShaftCol(viewportCols);
+
+  return {
+    lamp: { x: Math.max(1, shaftCol - 3), y: surfaceRow },
+    rope: { x: Math.min(worldCols - 2, shaftCol + 3), y: surfaceRow },
+    pickaxe4: createDeepPickaxe4Shop(worldCols, worldRows, deepStart, deepSurfaceRows, shaftCol, [
+      { x: Math.max(1, shaftCol - 3), y: surfaceRow },
+      { x: Math.min(worldCols - 2, shaftCol + 3), y: surfaceRow },
+    ]),
+  };
+}
+
 export function createDeepPickaxeShop(
   worldCols: number,
-  rows: number,
+  viewportRows: number,
   surfaceRows: number,
   viewportCols: number,
   exclude: Vec2[],
 ): Vec2 {
   const ironStart = getIronRegionStart(viewportCols);
+  const minRow = surfaceRows + HARD_LAYER_DEPTH;
   const candidates: Vec2[] = [];
 
-  for (let row = surfaceRows + 2; row < rows - 1; row += 1) {
+  for (let row = minRow; row < viewportRows - 1; row += 1) {
     for (let col = ironStart; col < worldCols; col += 1) {
       if (exclude.some((cell) => cell.x === col && cell.y === row)) continue;
       candidates.push({ x: col, y: row });
@@ -181,9 +386,33 @@ export function createDeepPickaxeShop(
   }
 
   if (candidates.length === 0) {
-    return { x: Math.max(ironStart, worldCols - 2), y: surfaceRows + 2 };
+    return { x: Math.max(ironStart, worldCols - 2), y: minRow };
+  }
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function createDeepPickaxe4Shop(
+  worldCols: number,
+  worldRows: number,
+  deepStart: number,
+  deepSurfaceRows: number,
+  shaftCol: number,
+  exclude: Vec2[],
+): Vec2 {
+  const candidates: Vec2[] = [];
+  const minRow = deepStart + deepSurfaceRows + 2;
+
+  for (let row = minRow; row < worldRows - 1; row += 1) {
+    for (let col = 0; col < worldCols; col += 1) {
+      if (col === shaftCol) continue;
+      if (exclude.some((cell) => cell.x === col && cell.y === row)) continue;
+      candidates.push({ x: col, y: row });
+    }
   }
 
+  if (candidates.length === 0) {
+    return { x: shaftCol + 1, y: minRow };
+  }
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
@@ -219,70 +448,115 @@ export function isShopCell(col: number, row: number, shops: ShopPositions): bool
   return false;
 }
 
+export function isDeepShopCell(col: number, row: number, shops: DeepShopPositions): boolean {
+  if (shops.lamp.x === col && shops.lamp.y === row) return true;
+  if (shops.rope.x === col && shops.rope.y === row) return true;
+  if (shops.pickaxe4 && shops.pickaxe4.x === col && shops.pickaxe4.y === row) return true;
+  return false;
+}
+
+export function isCellLit(
+  col: number,
+  row: number,
+  moleCol: number,
+  moleRow: number,
+  deepRegionStart: number,
+  deepSurfaceRows: number,
+  mainSurfaceRows: number,
+  hasLamp: boolean,
+): boolean {
+  if (!isDeepRegionRow(row, deepRegionStart)) return true;
+  if (isSkyAt(row, mainSurfaceRows, deepRegionStart, deepSurfaceRows)) return true;
+
+  if (!hasLamp) return false;
+
+  const dist = Math.abs(col - moleCol) + Math.abs(row - moleRow);
+  return dist <= LAMP_RADIUS;
+}
+
 export function resizeGrid(
   blocks: BlockCell[][],
   oldViewportCols: number,
-  rows: number,
-  surfaceRows: number,
+  oldViewportRows: number,
+  _mainSurfaceRows: number,
   newViewportCols: number,
-  newRows: number,
-  newSurfaceRows: number,
+  newViewportRows: number,
+  newMainSurfaceRows: number,
 ): BlockCell[][] {
   const oldWorldCols = getWorldCols(oldViewportCols);
   const newWorldCols = getWorldCols(newViewportCols);
+  const oldWorldRows = getWorldRows(oldViewportRows);
+  const newWorldRows = getWorldRows(newViewportRows);
   const oldIronStart = getIronRegionStart(oldViewportCols);
   const newIronStart = getIronRegionStart(newViewportCols);
+  const oldDeepStart = getDeepRegionStartRow(oldViewportRows);
+  const newDeepStart = getDeepRegionStartRow(newViewportRows);
 
-  return Array.from({ length: newRows }, (_, row) =>
+  const result = Array.from({ length: newWorldRows }, (_, row) =>
     Array.from({ length: newWorldCols }, (_, col) => {
-      if (row < newSurfaceRows) return 0;
-
-      const oldRow = row - newSurfaceRows + surfaceRows;
-
-      if (oldRow >= surfaceRows && oldRow < rows && col < oldWorldCols && col < newWorldCols) {
-        const oldCell = blocks[oldRow][col];
-        const wasIron = col >= oldIronStart;
-        const isIron = col >= newIronStart;
-        if (wasIron === isIron) return oldCell;
+      if (row < newWorldRows && col < newWorldCols) {
+        const inOld = row < oldWorldRows && col < oldWorldCols;
+        if (inOld) {
+          const oldCell = blocks[row][col];
+          const oldRegion =
+            row >= oldDeepStart ? "deep" : col >= oldIronStart ? "iron" : "main";
+          const newRegion =
+            row >= newDeepStart ? "deep" : col >= newIronStart ? "iron" : "main";
+          if (oldRegion === newRegion) return oldCell;
+        }
       }
-
-      return createBlockForCell(col, row, newViewportCols, newSurfaceRows);
+      return createBlockForCell(col, row, newViewportCols, newViewportRows, newMainSurfaceRows);
     }),
   );
+  carveMineShaft(result, newViewportCols, newViewportRows, newMainSurfaceRows);
+  return result;
 }
 
 export function resizeLadders(
   ladders: boolean[][],
   oldViewportCols: number,
-  rows: number,
-  surfaceRows: number,
+  oldViewportRows: number,
   newViewportCols: number,
-  newRows: number,
-  newSurfaceRows: number,
+  newViewportRows: number,
 ): boolean[][] {
   const oldWorldCols = getWorldCols(oldViewportCols);
   const newWorldCols = getWorldCols(newViewportCols);
+  const oldWorldRows = getWorldRows(oldViewportRows);
+  const newWorldRows = getWorldRows(newViewportRows);
 
-  return Array.from({ length: newRows }, (_, row) =>
+  return Array.from({ length: newWorldRows }, (_, row) =>
     Array.from({ length: newWorldCols }, (_, col) => {
-      if (row < newSurfaceRows && row < rows && col < oldWorldCols && col < newWorldCols) {
+      if (row < oldWorldRows && col < oldWorldCols && row < newWorldRows && col < newWorldCols) {
         return ladders[row][col];
       }
-
-      if (row < newSurfaceRows) return false;
-
-      const oldRow = row - newSurfaceRows + surfaceRows;
-      if (oldRow >= surfaceRows && oldRow < rows && col < oldWorldCols && col < newWorldCols) {
-        return ladders[oldRow][col];
-      }
-
       return false;
     }),
   );
 }
 
+export function resizeRopes(
+  ropes: boolean[][],
+  oldViewportCols: number,
+  oldViewportRows: number,
+  newViewportCols: number,
+  newViewportRows: number,
+): boolean[][] {
+  return resizeLadders(ropes, oldViewportCols, oldViewportRows, newViewportCols, newViewportRows);
+}
+
 export function hasLadder(ladders: boolean[][], col: number, row: number): boolean {
   return ladders[row]?.[col] ?? false;
+}
+
+export function hasRope(ropes: boolean[][], col: number, row: number): boolean {
+  return ropes[row]?.[col] ?? false;
+}
+
+export function hasRopeInColumn(ropes: boolean[][], col: number): boolean {
+  for (const row of ropes) {
+    if (row[col]) return true;
+  }
+  return false;
 }
 
 export function isSolid(blocks: BlockCell[][], col: number, row: number): boolean {
@@ -297,7 +571,8 @@ export function pickaxeLabel(level: PickaxeLevel, hasPierce: boolean, hasSideBre
   const parts: string[] = [];
   if (level === 0) parts.push("Обычная");
   else if (level === 1) parts.push("Улучш.");
-  else parts.push("3 ур.");
+  else if (level === 2) parts.push("3 ур.");
+  else parts.push("4 ур.");
   if (hasPierce) parts.push("+пробив");
   if (hasSideBreak) parts.push("+бок");
   return parts.join(" ");

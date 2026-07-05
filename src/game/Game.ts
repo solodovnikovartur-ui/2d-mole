@@ -13,39 +13,61 @@ import {
 import {
   CELL_SIZE,
   createDeepPickaxeShop,
+  createDeepShops,
   createEmptyLadders,
+  createEmptyRopes,
   createShopPositions,
   createSolidGrid,
   createStartMole,
+  diamondCellFromHitsRemaining,
+  diamondDamagePerHit,
+  diamondHitsRemaining,
   directionDelta,
   getBlock,
   getCameraCol,
+  getCameraRow,
+  getDeepMolePosition,
+  getDeepSurfaceRows,
   getIronRegionStart,
   getSurfaceRows,
   getViewportDimensions,
   getWorldCols,
   getWorldOffset,
+  getWorldRows,
   hasLadder,
+  hasRope,
+  hasRopeInColumn,
   ironCellFromHitsRemaining,
   ironDamagePerHit,
   ironHitsRemaining,
+  isDeepRegionRow,
+  isDeepShopCell,
+  isDiamondBlock,
   isHardBlock,
   isInsideGrid,
   isIronBlock,
+  isIronUndergroundCell,
   isShopCell,
-  isSkyRow,
+  isSkyAt,
   isSolid,
+  strikeCellType,
   LADDER_PACK_COST,
   LADDER_PACK_SIZE,
+  LAMP_COST,
+  ROPE_COST,
   PICKAXE_HARD_COST,
   PICKAXE_NORMAL_COST,
   PICKAXE3_HARD_COST,
   PICKAXE3_NORMAL_COST,
+  PICKAXE4_DIAMOND_COST,
+  PICKAXE4_IRON_COST,
   resizeGrid,
   resizeLadders,
+  resizeRopes,
   STARTING_LADDERS,
   type BlockCell,
   type Currency,
+  type DeepShopPositions,
   type Direction,
   type MoleState,
   type PickaxeLevel,
@@ -66,23 +88,36 @@ export interface GameState {
   cols: number;
   viewportCols: number;
   rows: number;
+  viewportRows: number;
   surfaceRows: number;
+  deepRegionStart: number;
+  deepSurfaceRows: number;
   ironRegionStart: number;
   cameraCol: number;
+  cameraRow: number;
   worldOffset: Vec2;
   blocks: BlockCell[][];
   ladders: boolean[][];
+  ropes: boolean[][];
   mole: MoleState;
   currency: Currency;
   ladderCount: number;
   pickaxeLevel: PickaxeLevel;
   hasPiercePickaxe: boolean;
   hasSideBreak: boolean;
+  hasLamp: boolean;
+  ropeCount: number;
+  inDeepRegion: boolean;
+  deepMole: Vec2;
   shops: ShopPositions;
+  deepShops: DeepShopPositions;
   computer: Vec2;
   atLadderShop: boolean;
   atPickaxeShop: boolean;
   atDeepPickaxeShop: boolean;
+  atLampShop: boolean;
+  atRopeShop: boolean;
+  atDeepPickaxe4Shop: boolean;
   atComputer: boolean;
   usingComputer: boolean;
   codeInput: string;
@@ -97,20 +132,31 @@ export class Game {
   private width = window.innerWidth;
   private height = window.innerHeight;
   private viewportCols = 1;
+  private viewportRows = 1;
   private cols = 1;
   private rows = 1;
   private surfaceRows = 1;
+  private deepSurfaceRows = 1;
   private blocks: BlockCell[][] = [];
   private ladders: boolean[][] = [];
+  private ropes: boolean[][] = [];
   private ladderCount = STARTING_LADDERS;
-  private currency: Currency = { normal: 0, hard: 0 };
+  private currency: Currency = { normal: 0, hard: 0, iron: 0, diamond: 0 };
   private pickaxeLevel: PickaxeLevel = 0;
   private hasPiercePickaxe = false;
   private hasSideBreak = false;
+  private hasLamp = false;
+  private ropeCount = 0;
+  private deepMole: Vec2 = { x: 0, y: 0 };
   private shops: ShopPositions = {
     ladder: { x: 2, y: 0 },
     pickaxe: { x: 3, y: 0 },
     deepPickaxe: null,
+  };
+  private deepShops: DeepShopPositions = {
+    lamp: { x: 0, y: 0 },
+    rope: { x: 0, y: 0 },
+    pickaxe4: null,
   };
   private computer: Vec2 = { x: 0, y: 0 };
   private hiddenCodes: HiddenCode[] = [];
@@ -154,28 +200,49 @@ export class Game {
     this.emitState();
   }
 
-  private initWorld(viewportCols: number, rows: number, surfaceRows: number): void {
+  private get deepRegionStart(): number {
+    return this.viewportRows;
+  }
+
+  private isSky(row: number): boolean {
+    return isSkyAt(row, this.surfaceRows, this.deepRegionStart, this.deepSurfaceRows);
+  }
+
+  private initWorld(viewportCols: number, viewportRows: number, surfaceRows: number): void {
     const worldCols = getWorldCols(viewportCols);
+    const worldRows = getWorldRows(viewportRows);
+    const deepSurfaceRows = getDeepSurfaceRows(viewportRows);
+
     this.viewportCols = viewportCols;
+    this.viewportRows = viewportRows;
     this.cols = worldCols;
-    this.rows = rows;
+    this.rows = worldRows;
     this.surfaceRows = surfaceRows;
-    this.blocks = createSolidGrid(worldCols, rows, surfaceRows, viewportCols);
-    this.ladders = createEmptyLadders(worldCols, rows);
+    this.deepSurfaceRows = deepSurfaceRows;
+    this.blocks = createSolidGrid(worldCols, worldRows, viewportCols, viewportRows, surfaceRows);
+    this.ladders = createEmptyLadders(worldCols, worldRows);
+    this.ropes = createEmptyRopes(worldCols, worldRows);
     this.ladderCount = STARTING_LADDERS;
-    this.currency = { normal: 0, hard: 0 };
+    this.currency = { normal: 0, hard: 0, iron: 0, diamond: 0 };
     this.pickaxeLevel = 0;
     this.hasPiercePickaxe = false;
     this.hasSideBreak = false;
+    this.hasLamp = false;
+    this.ropeCount = 0;
     this.shops = createShopPositions(viewportCols, surfaceRows);
     this.computer = createComputerPosition(viewportCols, surfaceRows);
-    const deepShop = createDeepPickaxeShop(worldCols, rows, surfaceRows, viewportCols, [
+    const deepShop = createDeepPickaxeShop(worldCols, viewportRows, surfaceRows, viewportCols, [
       this.shops.ladder,
       this.shops.pickaxe,
       this.computer,
     ]);
     this.shops = { ...this.shops, deepPickaxe: deepShop };
-    this.hiddenCodes = createHiddenCodes(worldCols, rows, surfaceRows, viewportCols, [deepShop]);
+    this.deepShops = createDeepShops(viewportCols, viewportRows, worldCols, worldRows);
+    this.deepMole = getDeepMolePosition(viewportCols, viewportRows);
+    this.hiddenCodes = createHiddenCodes(worldCols, viewportRows, surfaceRows, viewportCols, [
+      deepShop,
+      ...(this.deepShops.pickaxe4 ? [this.deepShops.pickaxe4] : []),
+    ]);
     this.codeMap = hiddenCodesToMap(this.hiddenCodes);
     this.discoveredCodes = [];
     this.usedCodes = [];
@@ -186,66 +253,101 @@ export class Game {
   }
 
   private applyViewportSize(reset = false): void {
-    const { viewportCols, rows } = getViewportDimensions(this.width, this.height);
-    const surfaceRows = getSurfaceRows(rows);
+    const { viewportCols, viewportRows } = getViewportDimensions(this.width, this.height);
+    const surfaceRows = getSurfaceRows(viewportRows);
     const worldCols = getWorldCols(viewportCols);
+    const worldRows = getWorldRows(viewportRows);
 
     if (reset || this.blocks.length === 0) {
-      this.initWorld(viewportCols, rows, surfaceRows);
+      this.initWorld(viewportCols, viewportRows, surfaceRows);
       return;
     }
 
-    const deepShop = this.shops.deepPickaxe;
+    let deepShop = this.shops.deepPickaxe;
+    const surfaceShops = createShopPositions(viewportCols, surfaceRows);
+    const shopExclude = [
+      surfaceShops.ladder,
+      surfaceShops.pickaxe,
+      createComputerPosition(viewportCols, surfaceRows),
+    ];
+    if (
+      !deepShop ||
+      !isIronUndergroundCell(deepShop.x, deepShop.y, viewportCols, surfaceRows)
+    ) {
+      deepShop = createDeepPickaxeShop(
+        worldCols,
+        viewportRows,
+        surfaceRows,
+        viewportCols,
+        shopExclude,
+      );
+    }
+    let pickaxe4Shop = this.deepShops.pickaxe4;
+    if (
+      pickaxe4Shop &&
+      (pickaxe4Shop.x >= worldCols ||
+        pickaxe4Shop.y >= worldRows ||
+        pickaxe4Shop.x < 0 ||
+        pickaxe4Shop.y < 0)
+    ) {
+      pickaxe4Shop = createDeepShops(viewportCols, viewportRows, worldCols, worldRows).pickaxe4;
+    }
     this.blocks = resizeGrid(
       this.blocks,
       this.viewportCols,
-      this.rows,
+      this.viewportRows,
       this.surfaceRows,
       viewportCols,
-      rows,
+      viewportRows,
       surfaceRows,
     );
     this.ladders = resizeLadders(
       this.ladders,
       this.viewportCols,
-      this.rows,
-      this.surfaceRows,
+      this.viewportRows,
       viewportCols,
-      rows,
-      surfaceRows,
+      viewportRows,
+    );
+    this.ropes = resizeRopes(
+      this.ropes,
+      this.viewportCols,
+      this.viewportRows,
+      viewportCols,
+      viewportRows,
     );
     this.hiddenCodes = resizeHiddenCodes(
       this.hiddenCodes,
       this.viewportCols,
-      this.rows,
+      this.viewportRows,
       this.surfaceRows,
       viewportCols,
-      rows,
+      viewportRows,
       surfaceRows,
-      deepShop ? [deepShop] : [],
+      [deepShop, pickaxe4Shop].filter((s): s is Vec2 => s !== null),
     );
     this.codeMap = hiddenCodesToMap(this.hiddenCodes);
     this.viewportCols = viewportCols;
+    this.viewportRows = viewportRows;
     this.cols = worldCols;
-    this.rows = rows;
+    this.rows = worldRows;
     this.surfaceRows = surfaceRows;
-    this.shops = {
-      ...createShopPositions(viewportCols, surfaceRows),
-      deepPickaxe: deepShop,
+    this.deepSurfaceRows = getDeepSurfaceRows(viewportRows);
+    this.shops = { ...createShopPositions(viewportCols, surfaceRows), deepPickaxe: deepShop };
+    this.deepShops = {
+      ...createDeepShops(viewportCols, viewportRows, worldCols, worldRows),
+      pickaxe4: pickaxe4Shop,
     };
     this.computer = createComputerPosition(viewportCols, surfaceRows);
+    this.deepMole = getDeepMolePosition(viewportCols, viewportRows);
     this.mole.col = Math.min(this.mole.col, worldCols - 1);
-    this.mole.row = Math.min(this.mole.row, rows - 1);
+    this.mole.row = Math.min(this.mole.row, worldRows - 1);
   }
 
   private loop(time: number): void {
     if (!this.running) return;
-
     const dt = this.lastTime === 0 ? 0 : (time - this.lastTime) / 1000;
     this.lastTime = time;
-
     this.update(dt);
-
     requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -263,7 +365,6 @@ export class Game {
         this.codeInput = "";
         return;
       }
-
       this.handleComputerInput();
       return;
     }
@@ -285,6 +386,22 @@ export class Game {
         this.mole.row === this.shops.deepPickaxe.y
       ) {
         this.buyDeepPickaxe();
+      } else if (
+        this.mole.col === this.deepShops.lamp.x &&
+        this.mole.row === this.deepShops.lamp.y
+      ) {
+        this.buyLamp();
+      } else if (
+        this.mole.col === this.deepShops.rope.x &&
+        this.mole.row === this.deepShops.rope.y
+      ) {
+        this.buyRope();
+      } else if (
+        this.deepShops.pickaxe4 &&
+        this.mole.col === this.deepShops.pickaxe4.x &&
+        this.mole.row === this.deepShops.pickaxe4.y
+      ) {
+        this.buyPickaxe4();
       }
     }
 
@@ -295,6 +412,12 @@ export class Game {
 
     if (this.input.isPressed("KeyQ")) {
       this.removeLadder();
+    } else if (this.input.isPressed("KeyR")) {
+      if (placeAhead) {
+        this.placeRopeAhead();
+      } else {
+        this.placeRope();
+      }
     } else if (this.input.isPressed("KeyE")) {
       if (isComputerCell(this.mole.col, this.mole.row, this.computer)) {
         this.usingComputer = true;
@@ -315,7 +438,6 @@ export class Game {
     }
 
     const directions: Direction[] = ["up", "down", "left", "right"];
-
     for (const direction of directions) {
       const keyCodes =
         direction === "up"
@@ -326,9 +448,7 @@ export class Game {
               ? ["ArrowLeft", "KeyA"]
               : ["ArrowRight", "KeyD"];
 
-      const pressed = keyCodes.some((code) => this.input.isPressed(code));
-      if (!pressed) continue;
-
+      if (!keyCodes.some((code) => this.input.isPressed(code))) continue;
       this.move(direction);
       return;
     }
@@ -339,12 +459,10 @@ export class Game {
       this.codeInput = this.codeInput.slice(0, -1);
       return;
     }
-
     if (this.input.isPressed("Enter") || this.input.isPressed("NumpadEnter")) {
       this.submitCode();
       return;
     }
-
     for (const char of this.input.consumePressedChars()) {
       if (this.codeInput.length >= CODE_LENGTH) continue;
       if (!isValidCodeChar(char)) continue;
@@ -357,22 +475,18 @@ export class Game {
       this.codeMessage = "Код должен быть из 6 букв";
       return;
     }
-
     if (this.usedCodes.includes(this.codeInput)) {
       this.codeMessage = "Этот код уже использован";
       this.codeInput = "";
       return;
     }
-
     const match = this.hiddenCodes.find((entry) => entry.code === this.codeInput);
     if (!match) {
       this.codeMessage = "Неверный код";
       this.codeInput = "";
       return;
     }
-
     this.usedCodes.push(this.codeInput);
-
     if (match.type === "ladder") {
       this.ladderCount += LADDER_CODE_REWARD;
       this.codeMessage = `+${LADDER_CODE_REWARD} лестниц!`;
@@ -383,13 +497,11 @@ export class Game {
       this.hasSideBreak = true;
       this.codeMessage = "Удары ломают блоки по бокам!";
     }
-
     this.codeInput = "";
   }
 
   private buyLadders(): void {
     if (this.currency.normal < LADDER_PACK_COST) return;
-
     this.currency.normal -= LADDER_PACK_COST;
     this.ladderCount += LADDER_PACK_SIZE;
   }
@@ -398,7 +510,6 @@ export class Game {
     if (this.pickaxeLevel >= 1) return;
     if (this.currency.hard < PICKAXE_HARD_COST) return;
     if (this.currency.normal < PICKAXE_NORMAL_COST) return;
-
     this.currency.hard -= PICKAXE_HARD_COST;
     this.currency.normal -= PICKAXE_NORMAL_COST;
     this.pickaxeLevel = 1;
@@ -409,10 +520,58 @@ export class Game {
     if (this.pickaxeLevel >= 2) return;
     if (this.currency.hard < PICKAXE3_HARD_COST) return;
     if (this.currency.normal < PICKAXE3_NORMAL_COST) return;
-
     this.currency.hard -= PICKAXE3_HARD_COST;
     this.currency.normal -= PICKAXE3_NORMAL_COST;
     this.pickaxeLevel = 2;
+  }
+
+  private buyLamp(): void {
+    if (this.hasLamp) return;
+    if (this.currency.hard < LAMP_COST) return;
+    this.currency.hard -= LAMP_COST;
+    this.hasLamp = true;
+    this.codeMessage = "Лампа освещает область вокруг крота!";
+  }
+
+  private buyRope(): void {
+    if (this.currency.iron < ROPE_COST) return;
+    this.currency.iron -= ROPE_COST;
+    this.ropeCount += 1;
+    this.codeMessage = "Верёвка в инвентаре — нажми R в нужной колонке";
+  }
+
+  private placeRope(): void {
+    this.placeRopeAt(this.mole.col);
+  }
+
+  private placeRopeAhead(): void {
+    const delta = directionDelta(this.mole.facing);
+    this.placeRopeAt(this.mole.col + delta.x);
+  }
+
+  private placeRopeAt(col: number): void {
+    if (this.ropeCount <= 0) return;
+    if (!isInsideGrid(col, this.mole.row, this.cols, this.rows)) return;
+    if (hasRopeInColumn(this.ropes, col)) {
+      this.codeMessage = "В этой колонке уже есть верёвка";
+      return;
+    }
+    for (let row = this.mole.row; row < this.rows; row += 1) {
+      this.ropes[row][col] = true;
+    }
+    this.ropeCount -= 1;
+    this.codeMessage = "Верёвка установлена!";
+  }
+
+  private buyPickaxe4(): void {
+    if (this.pickaxeLevel < 2) return;
+    if (this.pickaxeLevel >= 3) return;
+    if (this.currency.diamond < PICKAXE4_DIAMOND_COST) return;
+    if (this.currency.iron < PICKAXE4_IRON_COST) return;
+    this.currency.diamond -= PICKAXE4_DIAMOND_COST;
+    this.currency.iron -= PICKAXE4_IRON_COST;
+    this.pickaxeLevel = 3;
+    this.codeMessage = "Кирка 4 уровня — алмазы за 1 удар!";
   }
 
   private placeLadder(): void {
@@ -427,11 +586,11 @@ export class Game {
   private placeLadderAt(col: number, row: number): void {
     if (this.ladderCount <= 0) return;
     if (!isInsideGrid(col, row, this.cols, this.rows)) return;
-    if (!isSkyRow(row, this.surfaceRows) && isSolid(this.blocks, col, row)) return;
+    if (!this.isSky(row) && isSolid(this.blocks, col, row)) return;
     if (hasLadder(this.ladders, col, row)) return;
     if (isShopCell(col, row, this.shops)) return;
+    if (isDeepShopCell(col, row, this.deepShops)) return;
     if (isComputerCell(col, row, this.computer)) return;
-
     this.ladders[row][col] = true;
     this.ladderCount -= 1;
   }
@@ -439,7 +598,6 @@ export class Game {
   private removeLadder(): void {
     const { col, row } = this.mole;
     if (!hasLadder(this.ladders, col, row)) return;
-
     this.ladders[row][col] = false;
     this.ladderCount += 1;
   }
@@ -447,12 +605,10 @@ export class Game {
   private revealCodeIfAny(col: number, row: number): void {
     const entry = this.codeMap.get(codeKey(col, row));
     if (!entry) return;
-
     if (!this.discoveredCodes.includes(entry.code)) {
       this.discoveredCodes.push(entry.code);
       this.codeMessage = `Найден код (${codeTypeLabel(entry.type)}): ${entry.code}`;
     }
-
     this.codeMap.delete(codeKey(col, row));
   }
 
@@ -463,22 +619,38 @@ export class Game {
     allowSideBreak = true,
     allowPierce = true,
   ): boolean {
-    const cell = getBlock(this.blocks, col, row);
-    if (cell === 0) return true;
+    const rawCell = getBlock(this.blocks, col, row);
+    if (rawCell === 0) return true;
+    const cell = strikeCellType(rawCell, row, this.deepRegionStart, this.deepSurfaceRows);
 
-    if (isIronBlock(cell)) {
-      const hitsLeft = ironHitsRemaining(cell);
-      const damage = ironDamagePerHit(this.pickaxeLevel);
+    if (isDiamondBlock(cell)) {
+      const hitsLeft = diamondHitsRemaining(cell);
+      const damage = diamondDamagePerHit(this.pickaxeLevel, hitsLeft);
       const newHitsLeft = hitsLeft - damage;
-
       if (newHitsLeft <= 0) {
         this.blocks[row][col] = 0;
+        this.currency.diamond += 1;
         this.revealCodeIfAny(col, row);
         this.pierceNextBlock(col, row, direction, allowPierce);
         if (allowSideBreak) this.strikeSideBlocks(col, row, direction);
         return true;
       }
+      this.blocks[row][col] = diamondCellFromHitsRemaining(newHitsLeft);
+      return false;
+    }
 
+    if (isIronBlock(cell)) {
+      const hitsLeft = ironHitsRemaining(cell);
+      const damage = ironDamagePerHit(this.pickaxeLevel);
+      const newHitsLeft = hitsLeft - damage;
+      if (newHitsLeft <= 0) {
+        this.blocks[row][col] = 0;
+        this.currency.iron += 1;
+        this.revealCodeIfAny(col, row);
+        this.pierceNextBlock(col, row, direction, allowPierce);
+        if (allowSideBreak) this.strikeSideBlocks(col, row, direction);
+        return true;
+      }
       this.blocks[row][col] = ironCellFromHitsRemaining(newHitsLeft);
       return false;
     }
@@ -514,48 +686,47 @@ export class Game {
     allowPierce = true,
   ): void {
     if (!allowPierce || !this.hasPiercePickaxe || !direction) return;
-
     const delta = directionDelta(direction);
     const nextCol = col + delta.x;
     const nextRow = row + delta.y;
-
     if (!isInsideGrid(nextCol, nextRow, this.cols, this.rows)) return;
-    if (isSkyRow(nextRow, this.surfaceRows)) return;
+    if (this.isSky(nextRow)) return;
     if (!isSolid(this.blocks, nextCol, nextRow)) return;
-
     this.strikeBlock(nextCol, nextRow, direction, false, false);
   }
 
   private strikeSideBlocks(col: number, row: number, direction?: Direction): void {
     if (!this.hasSideBreak || !direction) return;
-
     const sideDirections: Direction[] =
       direction === "left" || direction === "right" ? ["up", "down"] : ["left", "right"];
-
     for (const side of sideDirections) {
       const delta = directionDelta(side);
       const sideCol = col + delta.x;
       const sideRow = row + delta.y;
-
       if (!isInsideGrid(sideCol, sideRow, this.cols, this.rows)) continue;
-      if (isSkyRow(sideRow, this.surfaceRows)) continue;
+      if (this.isSky(sideRow)) continue;
       if (!isSolid(this.blocks, sideCol, sideRow)) continue;
-
       this.strikeBlock(sideCol, sideRow, direction, false, false);
     }
   }
 
+  private onRopeOrLadder(): boolean {
+    return (
+      hasLadder(this.ladders, this.mole.col, this.mole.row) ||
+      hasRope(this.ropes, this.mole.col, this.mole.row)
+    );
+  }
+
   private move(direction: Direction): void {
     this.mole.facing = direction;
-
     const delta = directionDelta(direction);
     const targetCol = this.mole.col + delta.x;
     const targetRow = this.mole.row + delta.y;
 
     if (!isInsideGrid(targetCol, targetRow, this.cols, this.rows)) return;
 
-    const targetSolid = !isSkyRow(targetRow, this.surfaceRows) && isSolid(this.blocks, targetCol, targetRow);
-    const onLadder = hasLadder(this.ladders, this.mole.col, this.mole.row);
+    const targetSolid = !this.isSky(targetRow) && isSolid(this.blocks, targetCol, targetRow);
+    const onClimb = this.onRopeOrLadder();
 
     if (direction === "up") {
       if (targetSolid) {
@@ -563,9 +734,7 @@ export class Game {
         this.setMolePosition(targetCol, targetRow);
         return;
       }
-
-      if (!this.canClimbUp(onLadder, targetCol, targetRow)) return;
-
+      if (!this.canClimbUp(onClimb, targetCol, targetRow)) return;
       this.setMolePosition(targetCol, targetRow);
       return;
     }
@@ -576,9 +745,7 @@ export class Game {
         this.setMolePosition(targetCol, targetRow);
         return;
       }
-
-      if (!onLadder && !isSkyRow(this.mole.row, this.surfaceRows)) return;
-
+      if (!onClimb && !this.isSky(this.mole.row)) return;
       this.setMolePosition(targetCol, targetRow);
       return;
     }
@@ -586,7 +753,6 @@ export class Game {
     if (targetSolid) {
       if (!this.strikeBlock(targetCol, targetRow, direction)) return;
     }
-
     this.setMolePosition(targetCol, targetRow);
   }
 
@@ -595,36 +761,44 @@ export class Game {
     this.mole.row = row;
   }
 
-  private canClimbUp(onLadder: boolean, targetCol: number, targetRow: number): boolean {
-    if (isSkyRow(this.mole.row, this.surfaceRows) && isSkyRow(targetRow, this.surfaceRows)) {
-      return true;
-    }
+  private canClimbUp(onClimb: boolean, targetCol: number, targetRow: number): boolean {
+    if (this.isSky(this.mole.row) && this.isSky(targetRow)) return true;
+    return (
+      onClimb &&
+      (hasLadder(this.ladders, targetCol, targetRow) || hasRope(this.ropes, targetCol, targetRow))
+    );
+  }
 
-    return onLadder && hasLadder(this.ladders, targetCol, targetRow);
+  private isStandingOnSpecial(): boolean {
+    return (
+      isShopCell(this.mole.col, this.mole.row, this.shops) ||
+      isDeepShopCell(this.mole.col, this.mole.row, this.deepShops) ||
+      isComputerCell(this.mole.col, this.mole.row, this.computer)
+    );
   }
 
   private applyGravity(): void {
     if (this.usingComputer) return;
-    if (hasLadder(this.ladders, this.mole.col, this.mole.row)) return;
-    if (isShopCell(this.mole.col, this.mole.row, this.shops)) return;
-    if (isComputerCell(this.mole.col, this.mole.row, this.computer)) return;
+    if (this.onRopeOrLadder()) return;
+    if (this.isStandingOnSpecial()) return;
 
     while (true) {
       const belowRow = this.mole.row + 1;
       if (!isInsideGrid(this.mole.col, belowRow, this.cols, this.rows)) break;
       if (isSolid(this.blocks, this.mole.col, belowRow)) break;
 
-      if (
+      const belowShop =
         isShopCell(this.mole.col, belowRow, this.shops) ||
-        isComputerCell(this.mole.col, belowRow, this.computer)
-      ) {
+        isDeepShopCell(this.mole.col, belowRow, this.deepShops) ||
+        isComputerCell(this.mole.col, belowRow, this.computer);
+
+      if (belowShop) {
         this.mole.row = belowRow;
         break;
       }
 
       this.mole.row = belowRow;
-
-      if (hasLadder(this.ladders, this.mole.col, this.mole.row)) break;
+      if (this.onRopeOrLadder()) break;
     }
   }
 
@@ -640,7 +814,9 @@ export class Game {
 
   private emitState(): void {
     const deep = this.shops.deepPickaxe;
+    const pickaxe4 = this.deepShops.pickaxe4;
     const cameraCol = getCameraCol(this.mole.col, this.viewportCols, this.cols);
+    const cameraRow = getCameraRow(this.mole.row, this.viewportRows, this.rows);
 
     this.onStateChange?.({
       elapsed: this.elapsed,
@@ -650,22 +826,42 @@ export class Game {
       cols: this.cols,
       viewportCols: this.viewportCols,
       rows: this.rows,
+      viewportRows: this.viewportRows,
       surfaceRows: this.surfaceRows,
+      deepRegionStart: this.deepRegionStart,
+      deepSurfaceRows: this.deepSurfaceRows,
       ironRegionStart: getIronRegionStart(this.viewportCols),
       cameraCol,
-      worldOffset: getWorldOffset(this.width, this.viewportCols, cameraCol),
+      cameraRow,
+      worldOffset: getWorldOffset(
+        this.width,
+        this.viewportCols,
+        cameraCol,
+        this.viewportRows,
+        cameraRow,
+      ),
       blocks: this.blocks.map((row) => [...row]),
       ladders: this.ladders.map((row) => [...row]),
+      ropes: this.ropes.map((row) => [...row]),
       mole: { ...this.mole },
       currency: { ...this.currency },
       ladderCount: this.ladderCount,
       pickaxeLevel: this.pickaxeLevel,
       hasPiercePickaxe: this.hasPiercePickaxe,
       hasSideBreak: this.hasSideBreak,
+      hasLamp: this.hasLamp,
+      ropeCount: this.ropeCount,
+      inDeepRegion: isDeepRegionRow(this.mole.row, this.deepRegionStart),
+      deepMole: { ...this.deepMole },
       shops: {
         ladder: { ...this.shops.ladder },
         pickaxe: { ...this.shops.pickaxe },
         deepPickaxe: deep ? { ...deep } : null,
+      },
+      deepShops: {
+        lamp: { ...this.deepShops.lamp },
+        rope: { ...this.deepShops.rope },
+        pickaxe4: pickaxe4 ? { ...pickaxe4 } : null,
       },
       computer: { ...this.computer },
       atLadderShop:
@@ -674,6 +870,13 @@ export class Game {
         this.mole.col === this.shops.pickaxe.x && this.mole.row === this.shops.pickaxe.y,
       atDeepPickaxeShop: deep
         ? this.mole.col === deep.x && this.mole.row === deep.y
+        : false,
+      atLampShop:
+        this.mole.col === this.deepShops.lamp.x && this.mole.row === this.deepShops.lamp.y,
+      atRopeShop:
+        this.mole.col === this.deepShops.rope.x && this.mole.row === this.deepShops.rope.y,
+      atDeepPickaxe4Shop: pickaxe4
+        ? this.mole.col === pickaxe4.x && this.mole.row === pickaxe4.y
         : false,
       atComputer: isComputerCell(this.mole.col, this.mole.row, this.computer),
       usingComputer: this.usingComputer,
@@ -688,21 +891,31 @@ export class Game {
 export function createInitialGameState(): GameState {
   const width = window.innerWidth;
   const height = window.innerHeight;
-  const { viewportCols, rows } = getViewportDimensions(width, height);
-  const surfaceRows = getSurfaceRows(rows);
+  const { viewportCols, viewportRows } = getViewportDimensions(width, height);
+  const surfaceRows = getSurfaceRows(viewportRows);
   const worldCols = getWorldCols(viewportCols);
-  const blocks = createSolidGrid(worldCols, rows, surfaceRows, viewportCols);
-  const ladders = createEmptyLadders(worldCols, rows);
+  const worldRows = getWorldRows(viewportRows);
+  const deepSurfaceRows = getDeepSurfaceRows(viewportRows);
+  const deepRegionStart = viewportRows;
+  const blocks = createSolidGrid(worldCols, worldRows, viewportCols, viewportRows, surfaceRows);
+  const ladders = createEmptyLadders(worldCols, worldRows);
+  const ropes = createEmptyRopes(worldCols, worldRows);
   const mole = createStartMole(viewportCols, surfaceRows);
   const shops = createShopPositions(viewportCols, surfaceRows);
   const computer = createComputerPosition(viewportCols, surfaceRows);
-  const deepPickaxe = createDeepPickaxeShop(worldCols, rows, surfaceRows, viewportCols, [
+  const deepPickaxe = createDeepPickaxeShop(worldCols, viewportRows, surfaceRows, viewportCols, [
     shops.ladder,
     shops.pickaxe,
     computer,
   ]);
-  const hiddenCodes = createHiddenCodes(worldCols, rows, surfaceRows, viewportCols, [deepPickaxe]);
+  const deepShops = createDeepShops(viewportCols, viewportRows, worldCols, worldRows);
+  const hiddenCodes = createHiddenCodes(worldCols, viewportRows, surfaceRows, viewportCols, [
+    deepPickaxe,
+    ...(deepShops.pickaxe4 ? [deepShops.pickaxe4] : []),
+  ]);
+  const deepMole = getDeepMolePosition(viewportCols, viewportRows);
   const cameraCol = getCameraCol(mole.col, viewportCols, worldCols);
+  const cameraRow = getCameraRow(mole.row, viewportRows, worldRows);
 
   return {
     elapsed: 0,
@@ -711,24 +924,37 @@ export function createInitialGameState(): GameState {
     cellSize: CELL_SIZE,
     cols: worldCols,
     viewportCols,
-    rows,
+    rows: worldRows,
+    viewportRows,
     surfaceRows,
+    deepRegionStart,
+    deepSurfaceRows,
     ironRegionStart: getIronRegionStart(viewportCols),
     cameraCol,
-    worldOffset: getWorldOffset(width, viewportCols, cameraCol),
+    cameraRow,
+    worldOffset: getWorldOffset(width, viewportCols, cameraCol, viewportRows, cameraRow),
     blocks,
     ladders,
+    ropes,
     mole,
-    currency: { normal: 0, hard: 0 },
+    currency: { normal: 0, hard: 0, iron: 0, diamond: 0 },
     ladderCount: STARTING_LADDERS,
     pickaxeLevel: 0,
     hasPiercePickaxe: false,
     hasSideBreak: false,
+    hasLamp: false,
+    ropeCount: 0,
+    inDeepRegion: false,
+    deepMole,
     shops: { ...shops, deepPickaxe },
+    deepShops,
     computer,
     atLadderShop: false,
     atPickaxeShop: false,
     atDeepPickaxeShop: false,
+    atLampShop: false,
+    atRopeShop: false,
+    atDeepPickaxe4Shop: false,
     atComputer: false,
     usingComputer: false,
     codeInput: "",
