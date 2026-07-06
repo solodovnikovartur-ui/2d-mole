@@ -1,10 +1,21 @@
-import { getIronRegionStart, getWorldCols, isSkyRow, type BlockCell } from "./grid";
+import {
+  getDeepRegionStartRow,
+  getDeepSurfaceRows,
+  getIronRegionStart,
+  getWorldCols,
+  getWorldRows,
+  HARD_LAYER_DEPTH,
+  isSkyRow,
+  type BlockCell,
+} from "./grid";
 import type { Vec2 } from "./types";
 
 export const CODE_LENGTH = 6;
 export const LADDER_CODE_REWARD = 20;
+export const BOOST_DURATION = 8;
+export const BOOST_COOLDOWN = 20;
 
-export type CodeType = "ladder" | "pierce" | "sidebreak";
+export type CodeType = "ladder" | "pierce" | "sidebreak" | "boost" | "lamp";
 
 export interface HiddenCode {
   col: number;
@@ -38,16 +49,20 @@ function pickRandom<T>(items: T[]): T | null {
 
 export function createHiddenCodes(
   worldCols: number,
-  rows: number,
+  worldRows: number,
   surfaceRows: number,
   viewportCols: number,
+  viewportRows: number,
   exclude: Vec2[] = [],
 ): HiddenCode[] {
   const ironStart = getIronRegionStart(viewportCols);
+  const deepStart = getDeepRegionStartRow(viewportRows);
+  const deepMinRow = deepStart + getDeepSurfaceRows(viewportRows) + HARD_LAYER_DEPTH;
   const mainCandidates: Vec2[] = [];
   const ironCandidates: Vec2[] = [];
+  const deepCandidates: Vec2[] = [];
 
-  for (let row = surfaceRows; row < rows; row += 1) {
+  for (let row = surfaceRows; row < viewportRows; row += 1) {
     for (let col = 0; col < worldCols; col += 1) {
       if (isExcluded(col, row, exclude)) continue;
 
@@ -59,6 +74,13 @@ export function createHiddenCodes(
     }
   }
 
+  for (let row = deepMinRow; row < worldRows - 1; row += 1) {
+    for (let col = 0; col < worldCols; col += 1) {
+      if (isExcluded(col, row, exclude)) continue;
+      deepCandidates.push({ x: col, y: row });
+    }
+  }
+
   const ladderCell = pickRandom(mainCandidates);
   const pierceCell = pickRandom(
     mainCandidates.filter(
@@ -66,6 +88,12 @@ export function createHiddenCodes(
     ),
   );
   const sideCell = pickRandom(ironCandidates);
+  const boostCell = pickRandom(deepCandidates);
+  const lampCell = pickRandom(
+    deepCandidates.filter(
+      (cell) => !boostCell || cell.x !== boostCell.x || cell.y !== boostCell.y,
+    ),
+  );
 
   const codes: HiddenCode[] = [];
 
@@ -77,6 +105,12 @@ export function createHiddenCodes(
   }
   if (sideCell) {
     codes.push({ col: sideCell.x, row: sideCell.y, type: "sidebreak", code: generateCode() });
+  }
+  if (boostCell) {
+    codes.push({ col: boostCell.x, row: boostCell.y, type: "boost", code: generateCode() });
+  }
+  if (lampCell) {
+    codes.push({ col: lampCell.x, row: lampCell.y, type: "lamp", code: generateCode() });
   }
 
   return codes;
@@ -90,34 +124,72 @@ export function hiddenCodesToMap(codes: HiddenCode[]): Map<string, HiddenCode> {
   return map;
 }
 
+function remapCodeRow(
+  entry: HiddenCode,
+  surfaceRows: number,
+  newSurfaceRows: number,
+  oldDeepStart: number,
+  newDeepStart: number,
+  newWorldCols: number,
+  newWorldRows: number,
+): HiddenCode | null {
+  if (entry.col >= newWorldCols) return null;
+
+  if (entry.row >= oldDeepStart) {
+    const localRow = entry.row - oldDeepStart;
+    const newRow = newDeepStart + localRow;
+    if (newRow < newDeepStart || newRow >= newWorldRows) return null;
+    return { ...entry, row: newRow };
+  }
+
+  if (entry.row < surfaceRows) return null;
+
+  const newRow = entry.row - surfaceRows + newSurfaceRows;
+  if (newRow < newSurfaceRows || newRow >= newDeepStart) return null;
+  return { ...entry, row: newRow };
+}
+
 export function resizeHiddenCodes(
   codes: HiddenCode[],
   _oldViewportCols: number,
-  _rows: number,
+  oldViewportRows: number,
   surfaceRows: number,
   newViewportCols: number,
-  newRows: number,
+  newViewportRows: number,
   newSurfaceRows: number,
   exclude: Vec2[] = [],
 ): HiddenCode[] {
   const newWorldCols = getWorldCols(newViewportCols);
+  const newWorldRows = getWorldRows(newViewportRows);
+  const oldDeepStart = getDeepRegionStartRow(oldViewportRows);
+  const newDeepStart = getDeepRegionStartRow(newViewportRows);
+
   const preserved = codes
-    .map((entry) => {
-      if (entry.row < surfaceRows) return null;
-
-      const newRow = entry.row - surfaceRows + newSurfaceRows;
-      if (newRow < newSurfaceRows || newRow >= newRows) return null;
-      if (entry.col >= newWorldCols) return null;
-
-      return { ...entry, row: newRow, col: entry.col };
-    })
+    .map((entry) =>
+      remapCodeRow(
+        entry,
+        surfaceRows,
+        newSurfaceRows,
+        oldDeepStart,
+        newDeepStart,
+        newWorldCols,
+        newWorldRows,
+      ),
+    )
     .filter((entry): entry is HiddenCode => entry !== null);
 
-  if (preserved.length >= 3) {
-    return preserved.slice(0, 3);
+  if (preserved.length >= 5) {
+    return preserved.slice(0, 5);
   }
 
-  return createHiddenCodes(newWorldCols, newRows, newSurfaceRows, newViewportCols, exclude);
+  return createHiddenCodes(
+    newWorldCols,
+    newWorldRows,
+    newSurfaceRows,
+    newViewportCols,
+    newViewportRows,
+    exclude,
+  );
 }
 
 export function codeTypeLabel(type: CodeType): string {
@@ -128,6 +200,10 @@ export function codeTypeLabel(type: CodeType): string {
       return "магазина кирок";
     case "sidebreak":
       return "железных земель";
+    case "boost":
+      return "магазина кирок 4 уровня";
+    case "lamp":
+      return "магазина ламп";
   }
 }
 

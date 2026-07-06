@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import Computer from "./components/Computer.vue";
+import CodeInscriptions from "./components/CodeInscriptions.vue";
 import DeepMole from "./components/DeepMole.vue";
 import GameHud from "./components/GameHud.vue";
 import Grid from "./components/Grid.vue";
@@ -32,6 +33,7 @@ onUnmounted(() => {
   <div class="game-shell" @pointerdown="focusGame">
     <div v-if="gameState" class="game-world">
       <Grid :state="gameState" />
+      <CodeInscriptions :state="gameState" />
       <Shops :state="gameState" />
       <Computer :state="gameState" />
       <Mole :state="gameState" />

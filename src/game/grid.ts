@@ -15,6 +15,7 @@ export const PICKAXE4_IRON_COST = 30;
 export const LAMP_COST = 10;
 export const ROPE_COST = 10;
 export const LAMP_RADIUS = 4;
+export const LAMP_RADIUS_BOOSTED = 7;
 
 /** 0 empty · 1 normal · 2 hard · 3 hard dmg · 4–6 iron · 7–10 diamond */
 export type BlockCell = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
@@ -455,6 +456,10 @@ export function isDeepShopCell(col: number, row: number, shops: DeepShopPosition
   return false;
 }
 
+export function getLampRadius(expandedLamp: boolean): number {
+  return expandedLamp ? LAMP_RADIUS_BOOSTED : LAMP_RADIUS;
+}
+
 export function isCellLit(
   col: number,
   row: number,
@@ -464,6 +469,7 @@ export function isCellLit(
   deepSurfaceRows: number,
   mainSurfaceRows: number,
   hasLamp: boolean,
+  expandedLamp: boolean,
 ): boolean {
   if (!isDeepRegionRow(row, deepRegionStart)) return true;
   if (isSkyAt(row, mainSurfaceRows, deepRegionStart, deepSurfaceRows)) return true;
@@ -471,7 +477,7 @@ export function isCellLit(
   if (!hasLamp) return false;
 
   const dist = Math.abs(col - moleCol) + Math.abs(row - moleRow);
-  return dist <= LAMP_RADIUS;
+  return dist <= getLampRadius(expandedLamp);
 }
 
 export function resizeGrid(
@@ -561,6 +567,249 @@ export function hasRopeInColumn(ropes: boolean[][], col: number): boolean {
 
 export function isSolid(blocks: BlockCell[][], col: number, row: number): boolean {
   return (blocks[row]?.[col] ?? 0) > 0;
+}
+
+const HINT_TRAIL_MIN_DEPTH = 6;
+const HINT_TRAIL_MAX_DEPTH = 12;
+
+const TRAIL_DIRS: [number, number][] = [
+  [0, 1],
+  [0, -1],
+  [1, 0],
+  [-1, 0],
+  [1, 1],
+  [1, -1],
+  [-1, 1],
+  [-1, -1],
+];
+
+function trailSeed(targetCol: number, targetRow: number): number {
+  return targetCol * 92821 + targetRow * 68917 + 12345;
+}
+
+function makeTrailRng(targetCol: number, targetRow: number): () => number {
+  let state = trailSeed(targetCol, targetRow);
+  return () => {
+    state = (state * 1103515245 + 12345) & 0x7fffffff;
+    return state / 0x7fffffff;
+  };
+}
+
+function solidNeighbors8(
+  blocks: BlockCell[][],
+  col: number,
+  row: number,
+  cols: number,
+  rows: number,
+): Vec2[] {
+  const result: Vec2[] = [];
+  for (const [dx, dy] of TRAIL_DIRS) {
+    const nx = col + dx;
+    const ny = row + dy;
+    if (!isInsideGrid(nx, ny, cols, rows)) continue;
+    if (!isSolid(blocks, nx, ny)) continue;
+    result.push({ x: nx, y: ny });
+  }
+  return result;
+}
+
+function bfsDistancesFromTarget(
+  blocks: BlockCell[][],
+  targetCol: number,
+  targetRow: number,
+  cols: number,
+  rows: number,
+): Map<string, number> {
+  const targetKey = `${targetCol},${targetRow}`;
+  const dist = new Map<string, number>();
+  dist.set(targetKey, 0);
+  const queue: Vec2[] = [{ x: targetCol, y: targetRow }];
+
+  while (queue.length > 0) {
+    const cell = queue.shift()!;
+    const key = `${cell.x},${cell.y}`;
+    const depth = dist.get(key)!;
+    if (depth >= HINT_TRAIL_MAX_DEPTH) continue;
+
+    for (const [dx, dy] of TRAIL_DIRS) {
+      const nx = cell.x + dx;
+      const ny = cell.y + dy;
+      const nextKey = `${nx},${ny}`;
+      if (!isInsideGrid(nx, ny, cols, rows)) continue;
+      if (!isSolid(blocks, nx, ny)) continue;
+      if (dist.has(nextKey)) continue;
+      dist.set(nextKey, depth + 1);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+
+  return dist;
+}
+
+function appendShortestSolidPath(
+  blocks: BlockCell[][],
+  from: Vec2,
+  to: Vec2,
+  cols: number,
+  rows: number,
+  path: Vec2[],
+  visited: Set<string>,
+): void {
+  const fromKey = `${from.x},${from.y}`;
+  const toKey = `${to.x},${to.y}`;
+  if (fromKey === toKey) return;
+
+  const parent = new Map<string, string | null>();
+  parent.set(fromKey, null);
+  const queue: Vec2[] = [from];
+  let found: string | null = null;
+
+  while (queue.length > 0 && !found) {
+    const cell = queue.shift()!;
+    const key = `${cell.x},${cell.y}`;
+    for (const [dx, dy] of TRAIL_DIRS) {
+      const nx = cell.x + dx;
+      const ny = cell.y + dy;
+      const nextKey = `${nx},${ny}`;
+      if (!isInsideGrid(nx, ny, cols, rows)) continue;
+      if (!isSolid(blocks, nx, ny)) continue;
+      if (parent.has(nextKey)) continue;
+      parent.set(nextKey, key);
+      if (nextKey === toKey) {
+        found = nextKey;
+        break;
+      }
+      queue.push({ x: nx, y: ny });
+    }
+  }
+
+  if (!found) return;
+
+  const suffix: Vec2[] = [];
+  let cursor: string | null = found;
+  while (cursor && cursor !== fromKey) {
+    const [x, y] = cursor.split(",").map(Number);
+    suffix.push({ x, y });
+    cursor = parent.get(cursor) ?? null;
+  }
+  suffix.reverse();
+  for (const cell of suffix) {
+    const key = `${cell.x},${cell.y}`;
+    if (!visited.has(key)) {
+      path.push(cell);
+      visited.add(key);
+    }
+  }
+}
+
+function buildWindingSolidPath(
+  blocks: BlockCell[][],
+  start: Vec2,
+  target: Vec2,
+  distances: Map<string, number>,
+  cols: number,
+  rows: number,
+  rng: () => number,
+): Vec2[] {
+  const path: Vec2[] = [start];
+  const visited = new Set<string>([`${start.x},${start.y}`]);
+  let current = start;
+  const targetKey = `${target.x},${target.y}`;
+  const maxSteps = 64;
+
+  while (`${current.x},${current.y}` !== targetKey && path.length < maxSteps) {
+    const currentKey = `${current.x},${current.y}`;
+    const currentDist = distances.get(currentKey);
+    if (currentDist === undefined) break;
+
+    const neighbors = solidNeighbors8(blocks, current.x, current.y, cols, rows).filter((cell) => {
+      const key = `${cell.x},${cell.y}`;
+      return !visited.has(key) || key === targetKey;
+    });
+    if (neighbors.length === 0) break;
+
+    const toward = neighbors
+      .filter((cell) => (distances.get(`${cell.x},${cell.y}`) ?? 999) < currentDist)
+      .sort(
+        (a, b) =>
+          (distances.get(`${a.x},${a.y}`) ?? 0) - (distances.get(`${b.x},${b.y}`) ?? 0),
+      );
+    const sideways = neighbors.filter(
+      (cell) => (distances.get(`${cell.x},${cell.y}`) ?? -1) === currentDist,
+    );
+
+    const roll = rng();
+    let next: Vec2;
+    if (roll < 0.82 && toward.length > 0) {
+      const best = toward.slice(0, Math.min(2, toward.length));
+      next = best[Math.floor(rng() * best.length)];
+    } else if (sideways.length > 0) {
+      next = sideways[Math.floor(rng() * sideways.length)];
+    } else if (toward.length > 0) {
+      next = toward[0];
+    } else {
+      next = neighbors[0];
+    }
+    const nextKey = `${next.x},${next.y}`;
+    path.push(next);
+    visited.add(nextKey);
+    current = next;
+  }
+
+  if (`${current.x},${current.y}` !== targetKey) {
+    appendShortestSolidPath(blocks, current, target, cols, rows, path, visited);
+  }
+
+  return path;
+}
+
+/** Извилистая цепочка твёрдых блоков (8 направлений) от далёкой клетки к цели. */
+export function buildHintTrail(
+  blocks: BlockCell[][],
+  targetCol: number,
+  targetRow: number,
+  cols: number,
+  rows: number,
+): Vec2[] {
+  if (!isSolid(blocks, targetCol, targetRow)) return [];
+
+  const distances = bfsDistancesFromTarget(blocks, targetCol, targetRow, cols, rows);
+  const candidates: Vec2[] = [];
+
+  for (const [key, depth] of distances) {
+    if (depth < HINT_TRAIL_MIN_DEPTH || depth > HINT_TRAIL_MAX_DEPTH) continue;
+    const [x, y] = key.split(",").map(Number);
+    candidates.push({ x, y });
+  }
+
+  if (candidates.length === 0) {
+    for (const [key, depth] of distances) {
+      if (depth < 3) continue;
+      const [x, y] = key.split(",").map(Number);
+      candidates.push({ x, y });
+    }
+  }
+  if (candidates.length === 0) return [{ x: targetCol, y: targetRow }];
+
+  const rng = makeTrailRng(targetCol, targetRow);
+  const start = candidates[Math.floor(rng() * candidates.length)];
+  return buildWindingSolidPath(
+    blocks,
+    start,
+    { x: targetCol, y: targetRow },
+    distances,
+    cols,
+    rows,
+    rng,
+  );
+}
+
+export function manhattanDist(a: Vec2, b: Vec2): number {
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+export function chebyshevDist(a: Vec2, b: Vec2): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 }
 
 export function getBlock(blocks: BlockCell[][], col: number, row: number): BlockCell {

@@ -63,7 +63,8 @@ export class Input {
       code === "Escape" ||
       code === "Enter" ||
       code === "NumpadEnter" ||
-      code === "Backspace"
+      code === "Backspace" ||
+      code === "KeyB"
     );
   }
 

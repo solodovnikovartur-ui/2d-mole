@@ -1,4 +1,6 @@
 import {
+  BOOST_COOLDOWN,
+  BOOST_DURATION,
   CODE_LENGTH,
   codeTypeLabel,
   createComputerPosition,
@@ -8,6 +10,7 @@ import {
   isValidCodeChar,
   LADDER_CODE_REWARD,
   resizeHiddenCodes,
+  type CodeType,
   type HiddenCode,
 } from "./codes";
 import {
@@ -23,6 +26,8 @@ import {
   diamondDamagePerHit,
   diamondHitsRemaining,
   directionDelta,
+  buildHintTrail,
+  chebyshevDist,
   getBlock,
   getCameraCol,
   getCameraRow,
@@ -80,6 +85,24 @@ function codeKey(col: number, row: number): string {
   return `${col},${row}`;
 }
 
+function trailTargetKey(cell: Vec2): string {
+  return `${cell.x},${cell.y}`;
+}
+
+export interface BookEntry {
+  code: string;
+  label: string;
+  type: CodeType;
+  col: number;
+  row: number;
+}
+
+export interface BuriedCodeInscription {
+  col: number;
+  row: number;
+  code: string;
+}
+
 export interface GameState {
   elapsed: number;
   width: number;
@@ -106,6 +129,11 @@ export interface GameState {
   hasPiercePickaxe: boolean;
   hasSideBreak: boolean;
   hasLamp: boolean;
+  hasExpandedLamp: boolean;
+  boostUnlocked: boolean;
+  boostActive: boolean;
+  boostTimeLeft: number;
+  boostCooldownLeft: number;
   ropeCount: number;
   inDeepRegion: boolean;
   deepMole: Vec2;
@@ -122,9 +150,22 @@ export interface GameState {
   usingComputer: boolean;
   codeInput: string;
   codeMessage: string | null;
-  discoveredCodes: string[];
-  buriedCodeCells: Vec2[];
+  bookEntries: BookEntry[];
+  buriedCodeInscriptions: BuriedCodeInscription[];
+  hintDot: Vec2 | null;
 }
+
+interface SecretTrail {
+  target: Vec2;
+  path: Vec2[];
+  progress: number;
+  found: boolean;
+}
+
+const HINT_ACTIVATE_RADIUS = 10;
+const HINT_ADVANCE_RADIUS = 1;
+const HINT_FIND_RADIUS = 2;
+const CODE_MESSAGE_DURATION = 5;
 
 export class Game {
   private input = new Input();
@@ -146,6 +187,11 @@ export class Game {
   private hasPiercePickaxe = false;
   private hasSideBreak = false;
   private hasLamp = false;
+  private hasExpandedLamp = false;
+  private boostUnlocked = false;
+  private boostActive = false;
+  private boostTimeLeft = 0;
+  private boostCooldownLeft = 0;
   private ropeCount = 0;
   private deepMole: Vec2 = { x: 0, y: 0 };
   private shops: ShopPositions = {
@@ -161,11 +207,13 @@ export class Game {
   private computer: Vec2 = { x: 0, y: 0 };
   private hiddenCodes: HiddenCode[] = [];
   private codeMap = new Map<string, HiddenCode>();
-  private discoveredCodes: string[] = [];
+  private bookEntries: BookEntry[] = [];
   private usedCodes: string[] = [];
   private codeInput = "";
   private codeMessage: string | null = null;
+  private codeMessageUntil = 0;
   private usingComputer = false;
+  private secretTrails: SecretTrail[] = [];
   private mole: MoleState = { col: 0, row: 0, facing: "down" };
   private lastTime = 0;
   private running = false;
@@ -228,6 +276,11 @@ export class Game {
     this.hasPiercePickaxe = false;
     this.hasSideBreak = false;
     this.hasLamp = false;
+    this.hasExpandedLamp = false;
+    this.boostUnlocked = false;
+    this.boostActive = false;
+    this.boostTimeLeft = 0;
+    this.boostCooldownLeft = 0;
     this.ropeCount = 0;
     this.shops = createShopPositions(viewportCols, surfaceRows);
     this.computer = createComputerPosition(viewportCols, surfaceRows);
@@ -239,17 +292,134 @@ export class Game {
     this.shops = { ...this.shops, deepPickaxe: deepShop };
     this.deepShops = createDeepShops(viewportCols, viewportRows, worldCols, worldRows);
     this.deepMole = getDeepMolePosition(viewportCols, viewportRows);
-    this.hiddenCodes = createHiddenCodes(worldCols, viewportRows, surfaceRows, viewportCols, [
-      deepShop,
-      ...(this.deepShops.pickaxe4 ? [this.deepShops.pickaxe4] : []),
-    ]);
-    this.codeMap = hiddenCodesToMap(this.hiddenCodes);
-    this.discoveredCodes = [];
+    this.hiddenCodes = createHiddenCodes(
+      worldCols,
+      worldRows,
+      surfaceRows,
+      viewportCols,
+      viewportRows,
+      [deepShop, this.deepShops.lamp, this.deepShops.rope, ...(this.deepShops.pickaxe4 ? [this.deepShops.pickaxe4] : [])],
+    );
+    this.bookEntries = [];
     this.usedCodes = [];
     this.codeInput = "";
-    this.codeMessage = null;
+    this.setCodeMessage(null);
     this.usingComputer = false;
+    this.syncCodeMap();
     this.mole = createStartMole(viewportCols, surfaceRows);
+    this.initHintTrails();
+  }
+
+  private setCodeMessage(message: string | null, duration = CODE_MESSAGE_DURATION): void {
+    this.codeMessage = message;
+    this.codeMessageUntil = message === null ? 0 : this.elapsed + duration;
+  }
+
+  private syncCodeMap(): void {
+    const foundCells = new Set(this.bookEntries.map((entry) => codeKey(entry.col, entry.row)));
+    this.codeMap = hiddenCodesToMap(
+      this.hiddenCodes.filter((entry) => !foundCells.has(codeKey(entry.col, entry.row))),
+    );
+  }
+
+  private isCodeCellFound(col: number, row: number): boolean {
+    return this.bookEntries.some((entry) => entry.col === col && entry.row === row);
+  }
+
+  private collectSecretTargets(): Vec2[] {
+    const targets: Vec2[] = [];
+    for (const entry of this.hiddenCodes) {
+      if (this.isCodeCellFound(entry.col, entry.row)) continue;
+      if (isSolid(this.blocks, entry.col, entry.row)) {
+        targets.push({ x: entry.col, y: entry.row });
+      }
+    }
+    const ironShop = this.shops.deepPickaxe;
+    if (ironShop && isSolid(this.blocks, ironShop.x, ironShop.y)) {
+      targets.push({ x: ironShop.x, y: ironShop.y });
+    }
+    const pickaxe4 = this.deepShops.pickaxe4;
+    if (pickaxe4 && isSolid(this.blocks, pickaxe4.x, pickaxe4.y)) {
+      targets.push({ x: pickaxe4.x, y: pickaxe4.y });
+    }
+    return targets;
+  }
+
+  private initHintTrails(preserveProgress = false): void {
+    const oldState = preserveProgress
+      ? new Map(
+          this.secretTrails.map((trail) => [
+            trailTargetKey(trail.target),
+            { progress: trail.progress, found: trail.found },
+          ]),
+        )
+      : new Map<string, { progress: number; found: boolean }>();
+
+    this.secretTrails = [];
+    for (const target of this.collectSecretTargets()) {
+      const path = buildHintTrail(this.blocks, target.x, target.y, this.cols, this.rows);
+      if (path.length === 0) continue;
+      const saved = oldState.get(trailTargetKey(target));
+      const progress = Math.min(saved?.progress ?? 0, path.length - 1);
+      this.secretTrails.push({
+        target,
+        path,
+        progress,
+        found: saved?.found ?? false,
+      });
+    }
+  }
+
+  private updateHintTrails(): void {
+    this.secretTrails = this.secretTrails.filter((trail) =>
+      isSolid(this.blocks, trail.target.x, trail.target.y),
+    );
+
+    const mole = { x: this.mole.col, y: this.mole.row };
+
+    for (const trail of this.secretTrails) {
+      if (!trail.found) {
+        const start = trail.path[0];
+        if (chebyshevDist(mole, start) <= HINT_FIND_RADIUS) {
+          trail.found = true;
+          this.setCodeMessage("Кажется, тут начинается какой-то путь…");
+        }
+        continue;
+      }
+
+      const step = trail.path[trail.progress];
+      if (!isSolid(this.blocks, step.x, step.y)) {
+        trail.progress = Math.min(trail.progress + 1, trail.path.length - 1);
+        continue;
+      }
+      if (
+        chebyshevDist(mole, step) <= HINT_ADVANCE_RADIUS &&
+        trail.progress < trail.path.length - 1
+      ) {
+        trail.progress += 1;
+      }
+    }
+  }
+
+  private getActiveHintDot(): Vec2 | null {
+    if (this.mole.row < this.surfaceRows) return null;
+
+    let best: SecretTrail | null = null;
+    let bestDist = Infinity;
+
+    for (const trail of this.secretTrails) {
+      if (!trail.found) continue;
+      const step = trail.path[trail.progress];
+      if (!isSolid(this.blocks, step.x, step.y)) continue;
+      const dist = chebyshevDist({ x: this.mole.col, y: this.mole.row }, step);
+      if (dist > HINT_ACTIVATE_RADIUS) continue;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = trail;
+      }
+    }
+
+    return best ? { ...best.path[best.progress] } : null;
   }
 
   private applyViewportSize(reset = false): void {
@@ -325,7 +495,7 @@ export class Game {
       surfaceRows,
       [deepShop, pickaxe4Shop].filter((s): s is Vec2 => s !== null),
     );
-    this.codeMap = hiddenCodesToMap(this.hiddenCodes);
+    this.syncCodeMap();
     this.viewportCols = viewportCols;
     this.viewportRows = viewportRows;
     this.cols = worldCols;
@@ -341,6 +511,7 @@ export class Game {
     this.deepMole = getDeepMolePosition(viewportCols, viewportRows);
     this.mole.col = Math.min(this.mole.col, worldCols - 1);
     this.mole.row = Math.min(this.mole.row, worldRows - 1);
+    this.initHintTrails(true);
   }
 
   private loop(time: number): void {
@@ -353,9 +524,43 @@ export class Game {
 
   private update(dt: number): void {
     this.elapsed += dt;
+    this.tickBoost(dt);
+    this.updateHintTrails();
+    if (this.codeMessage && this.codeMessageUntil > 0 && this.elapsed >= this.codeMessageUntil) {
+      this.setCodeMessage(null);
+    }
     this.handleInput();
     this.applyGravity();
     this.emitState();
+  }
+
+  private tickBoost(dt: number): void {
+    if (this.boostActive) {
+      this.boostTimeLeft -= dt;
+      if (this.boostTimeLeft <= 0) {
+        this.boostActive = false;
+        this.boostTimeLeft = 0;
+        this.boostCooldownLeft = BOOST_COOLDOWN;
+        this.setCodeMessage("Буст закончился — перезарядка");
+      }
+      return;
+    }
+    if (this.boostCooldownLeft > 0) {
+      this.boostCooldownLeft = Math.max(0, this.boostCooldownLeft - dt);
+    }
+  }
+
+  private activateBoost(): void {
+    if (!this.boostUnlocked) return;
+    if (this.boostActive) return;
+    if (this.boostCooldownLeft > 0) return;
+    this.boostActive = true;
+    this.boostTimeLeft = BOOST_DURATION;
+    this.setCodeMessage("Буст! Одно нажатие = два действия");
+  }
+
+  private actionRepeats(): number {
+    return this.boostActive ? 2 : 1;
   }
 
   private handleInput(): void {
@@ -367,6 +572,10 @@ export class Game {
       }
       this.handleComputerInput();
       return;
+    }
+
+    if (this.input.isPressed("KeyB")) {
+      this.activateBoost();
     }
 
     if (this.input.isPressed("KeyF")) {
@@ -411,12 +620,11 @@ export class Game {
       this.input.isDown("Shift");
 
     if (this.input.isPressed("KeyQ")) {
-      this.removeLadder();
+      for (let i = 0; i < this.actionRepeats(); i += 1) this.removeLadder();
     } else if (this.input.isPressed("KeyR")) {
-      if (placeAhead) {
-        this.placeRopeAhead();
-      } else {
-        this.placeRope();
+      for (let i = 0; i < this.actionRepeats(); i += 1) {
+        if (placeAhead) this.placeRopeAhead();
+        else this.placeRope();
       }
     } else if (this.input.isPressed("KeyE")) {
       if (isComputerCell(this.mole.col, this.mole.row, this.computer)) {
@@ -425,15 +633,15 @@ export class Game {
         return;
       }
       if (placeAhead) {
-        this.placeLadderAhead();
+        for (let i = 0; i < this.actionRepeats(); i += 1) this.placeLadderAhead();
       } else {
-        this.placeLadder();
+        for (let i = 0; i < this.actionRepeats(); i += 1) this.placeLadder();
       }
     } else if (this.input.isPressed("Space")) {
       if (placeAhead) {
-        this.placeLadderAhead();
+        for (let i = 0; i < this.actionRepeats(); i += 1) this.placeLadderAhead();
       } else {
-        this.placeLadder();
+        for (let i = 0; i < this.actionRepeats(); i += 1) this.placeLadder();
       }
     }
 
@@ -449,7 +657,9 @@ export class Game {
               : ["ArrowRight", "KeyD"];
 
       if (!keyCodes.some((code) => this.input.isPressed(code))) continue;
-      this.move(direction);
+      for (let i = 0; i < this.actionRepeats(); i += 1) {
+        this.move(direction);
+      }
       return;
     }
   }
@@ -472,30 +682,36 @@ export class Game {
 
   private submitCode(): void {
     if (this.codeInput.length !== CODE_LENGTH) {
-      this.codeMessage = "Код должен быть из 6 букв";
+      this.setCodeMessage("Код должен быть из 6 букв", 8);
       return;
     }
     if (this.usedCodes.includes(this.codeInput)) {
-      this.codeMessage = "Этот код уже использован";
+      this.setCodeMessage("Этот код уже использован", 8);
       this.codeInput = "";
       return;
     }
     const match = this.hiddenCodes.find((entry) => entry.code === this.codeInput);
     if (!match) {
-      this.codeMessage = "Неверный код";
+      this.setCodeMessage("Неверный код", 8);
       this.codeInput = "";
       return;
     }
     this.usedCodes.push(this.codeInput);
     if (match.type === "ladder") {
       this.ladderCount += LADDER_CODE_REWARD;
-      this.codeMessage = `+${LADDER_CODE_REWARD} лестниц!`;
+      this.setCodeMessage(`+${LADDER_CODE_REWARD} лестниц!`, 8);
     } else if (match.type === "pierce") {
       this.hasPiercePickaxe = true;
-      this.codeMessage = "Кирка пробивает 2 блока за удар!";
-    } else {
+      this.setCodeMessage("Кирка пробивает 2 блока за удар!", 8);
+    } else if (match.type === "sidebreak") {
       this.hasSideBreak = true;
-      this.codeMessage = "Удары ломают блоки по бокам!";
+      this.setCodeMessage("Удары ломают блоки по бокам!", 8);
+    } else if (match.type === "lamp") {
+      this.hasExpandedLamp = true;
+      this.setCodeMessage("Радиус лампы увеличен!", 8);
+    } else {
+      this.boostUnlocked = true;
+      this.setCodeMessage("Буст разблокирован! Нажми B чтобы активировать", 8);
     }
     this.codeInput = "";
   }
@@ -530,14 +746,14 @@ export class Game {
     if (this.currency.hard < LAMP_COST) return;
     this.currency.hard -= LAMP_COST;
     this.hasLamp = true;
-    this.codeMessage = "Лампа освещает область вокруг крота!";
+    this.setCodeMessage("Лампа освещает область вокруг крота!");
   }
 
   private buyRope(): void {
     if (this.currency.iron < ROPE_COST) return;
     this.currency.iron -= ROPE_COST;
     this.ropeCount += 1;
-    this.codeMessage = "Верёвка в инвентаре — нажми R в нужной колонке";
+    this.setCodeMessage("Верёвка в инвентаре — нажми R в нужной колонке");
   }
 
   private placeRope(): void {
@@ -553,14 +769,14 @@ export class Game {
     if (this.ropeCount <= 0) return;
     if (!isInsideGrid(col, this.mole.row, this.cols, this.rows)) return;
     if (hasRopeInColumn(this.ropes, col)) {
-      this.codeMessage = "В этой колонке уже есть верёвка";
+      this.setCodeMessage("В этой колонке уже есть верёвка");
       return;
     }
     for (let row = this.mole.row; row < this.rows; row += 1) {
       this.ropes[row][col] = true;
     }
     this.ropeCount -= 1;
-    this.codeMessage = "Верёвка установлена!";
+    this.setCodeMessage("Верёвка установлена!");
   }
 
   private buyPickaxe4(): void {
@@ -571,7 +787,7 @@ export class Game {
     this.currency.diamond -= PICKAXE4_DIAMOND_COST;
     this.currency.iron -= PICKAXE4_IRON_COST;
     this.pickaxeLevel = 3;
-    this.codeMessage = "Кирка 4 уровня — алмазы за 1 удар!";
+    this.setCodeMessage("Кирка 4 уровня — алмазы за 1 удар!");
   }
 
   private placeLadder(): void {
@@ -605,11 +821,21 @@ export class Game {
   private revealCodeIfAny(col: number, row: number): void {
     const entry = this.codeMap.get(codeKey(col, row));
     if (!entry) return;
-    if (!this.discoveredCodes.includes(entry.code)) {
-      this.discoveredCodes.push(entry.code);
-      this.codeMessage = `Найден код (${codeTypeLabel(entry.type)}): ${entry.code}`;
+    if (!this.isCodeCellFound(col, row)) {
+      this.bookEntries.push({
+        code: entry.code,
+        label: codeTypeLabel(entry.type),
+        type: entry.type,
+        col,
+        row,
+      });
+      this.setCodeMessage(`Код найден! Записан в книжку (${codeTypeLabel(entry.type)})`);
     }
+    this.hiddenCodes = this.hiddenCodes.filter((hidden) => hidden.col !== col || hidden.row !== row);
     this.codeMap.delete(codeKey(col, row));
+    this.secretTrails = this.secretTrails.filter(
+      (trail) => trail.target.x !== col || trail.target.y !== row,
+    );
   }
 
   private strikeBlock(
@@ -802,14 +1028,14 @@ export class Game {
     }
   }
 
-  private getBuriedCodeCells(): Vec2[] {
-    const cells: Vec2[] = [];
+  private getBuriedCodeInscriptions(): BuriedCodeInscription[] {
+    const inscriptions: BuriedCodeInscription[] = [];
     for (const entry of this.codeMap.values()) {
-      if (isSolid(this.blocks, entry.col, entry.row)) {
-        cells.push({ x: entry.col, y: entry.row });
-      }
+      if (this.isCodeCellFound(entry.col, entry.row)) continue;
+      if (!isSolid(this.blocks, entry.col, entry.row)) continue;
+      inscriptions.push({ col: entry.col, row: entry.row, code: entry.code });
     }
-    return cells;
+    return inscriptions;
   }
 
   private emitState(): void {
@@ -850,6 +1076,11 @@ export class Game {
       hasPiercePickaxe: this.hasPiercePickaxe,
       hasSideBreak: this.hasSideBreak,
       hasLamp: this.hasLamp,
+      hasExpandedLamp: this.hasExpandedLamp,
+      boostUnlocked: this.boostUnlocked,
+      boostActive: this.boostActive,
+      boostTimeLeft: this.boostTimeLeft,
+      boostCooldownLeft: this.boostCooldownLeft,
       ropeCount: this.ropeCount,
       inDeepRegion: isDeepRegionRow(this.mole.row, this.deepRegionStart),
       deepMole: { ...this.deepMole },
@@ -882,8 +1113,9 @@ export class Game {
       usingComputer: this.usingComputer,
       codeInput: this.codeInput,
       codeMessage: this.codeMessage,
-      discoveredCodes: [...this.discoveredCodes],
-      buriedCodeCells: this.getBuriedCodeCells(),
+      bookEntries: Array.isArray(this.bookEntries) ? [...this.bookEntries] : [],
+      buriedCodeInscriptions: this.getBuriedCodeInscriptions(),
+      hintDot: this.getActiveHintDot(),
     });
   }
 }
@@ -909,10 +1141,14 @@ export function createInitialGameState(): GameState {
     computer,
   ]);
   const deepShops = createDeepShops(viewportCols, viewportRows, worldCols, worldRows);
-  const hiddenCodes = createHiddenCodes(worldCols, viewportRows, surfaceRows, viewportCols, [
-    deepPickaxe,
-    ...(deepShops.pickaxe4 ? [deepShops.pickaxe4] : []),
-  ]);
+  const hiddenCodes = createHiddenCodes(
+    worldCols,
+    worldRows,
+    surfaceRows,
+    viewportCols,
+    viewportRows,
+    [deepPickaxe, deepShops.lamp, deepShops.rope, ...(deepShops.pickaxe4 ? [deepShops.pickaxe4] : [])],
+  );
   const deepMole = getDeepMolePosition(viewportCols, viewportRows);
   const cameraCol = getCameraCol(mole.col, viewportCols, worldCols);
   const cameraRow = getCameraRow(mole.row, viewportRows, worldRows);
@@ -943,6 +1179,11 @@ export function createInitialGameState(): GameState {
     hasPiercePickaxe: false,
     hasSideBreak: false,
     hasLamp: false,
+    hasExpandedLamp: false,
+    boostUnlocked: false,
+    boostActive: false,
+    boostTimeLeft: 0,
+    boostCooldownLeft: 0,
     ropeCount: 0,
     inDeepRegion: false,
     deepMole,
@@ -959,7 +1200,12 @@ export function createInitialGameState(): GameState {
     usingComputer: false,
     codeInput: "",
     codeMessage: null,
-    discoveredCodes: [],
-    buriedCodeCells: hiddenCodes.map((entry) => ({ x: entry.col, y: entry.row })),
+    bookEntries: [],
+    buriedCodeInscriptions: hiddenCodes.map((entry) => ({
+      col: entry.col,
+      row: entry.row,
+      code: entry.code,
+    })),
+    hintDot: null,
   };
 }

@@ -1,12 +1,17 @@
 <script setup lang="ts">
 
 import {
-
+  BOOST_COOLDOWN,
+  BOOST_DURATION,
+} from "../game/codes";
+import {
   LADDER_PACK_COST,
 
   LADDER_PACK_SIZE,
 
   LAMP_COST,
+  LAMP_RADIUS,
+  LAMP_RADIUS_BOOSTED,
   ROPE_COST,
 
   pickaxeLabel,
@@ -113,6 +118,17 @@ function formatTime(seconds: number): string {
 
       </div>
 
+      <div v-if="state.boostUnlocked" class="hud__panel hud__panel--boost">
+        <span class="hud__label">Буст</span>
+        <span v-if="state.boostActive" class="hud__value hud__value--boost">
+          {{ Math.ceil(state.boostTimeLeft) }}с
+        </span>
+        <span v-else-if="state.boostCooldownLeft > 0" class="hud__value hud__value--cooldown">
+          ↻ {{ Math.ceil(state.boostCooldownLeft) }}с
+        </span>
+        <span v-else class="hud__value hud__value--boost-ready">B</span>
+      </div>
+
       <div class="hud__panel">
 
         <span class="hud__label">Кирка</span>
@@ -129,48 +145,38 @@ function formatTime(seconds: number): string {
 
 
 
-    <div v-if="state.discoveredCodes.length > 0" class="hud__codes">
-
-      <span class="hud__label">Найденные коды</span>
-
-      <span v-for="code in state.discoveredCodes" :key="code" class="hud__code">{{ code }}</span>
-
-    </div>
-
-
-
-    <div v-if="state.codeMessage" class="hud__message">
-
+    <div
+      v-if="state.codeMessage && !state.atComputer && !state.usingComputer"
+      class="hud__message"
+    >
       {{ state.codeMessage }}
-
     </div>
 
+    <div
+      v-if="state.atComputer || state.usingComputer"
+      class="hud__shop-panel hud__shop-panel--computer"
+    >
+      <strong>📖 Книжка</strong>
 
+      <p v-if="!state.bookEntries?.length" class="hud__book-empty">Пока пусто — ищи коды в земле</p>
 
-    <div v-if="state.usingComputer" class="hud__shop-panel hud__shop-panel--computer">
+      <ul v-else class="hud__book-list">
+        <li v-for="entry in state.bookEntries" :key="entry.code" class="hud__book-item">
+          <span class="hud__book-code">{{ entry.code }}</span>
+          <span class="hud__book-label">{{ entry.label }}</span>
+        </li>
+      </ul>
 
-      <strong>Компьютер</strong>
+      <template v-if="state.usingComputer">
+        <p>Введи код из 6 букв и нажми Enter</p>
+        <p class="hud__code-input">
+          {{ state.codeInput || "______" }}
+        </p>
+        <p v-if="state.codeMessage" class="hud__book-feedback">{{ state.codeMessage }}</p>
+        <p class="hud__shop-hint">Буквы как на QWERTY · ESC — выйти</p>
+      </template>
 
-      <p>Введи код из 6 букв и нажми Enter</p>
-
-      <p class="hud__code-input">
-
-        {{ state.codeInput || "______" }}
-
-      </p>
-
-      <p class="hud__shop-hint">Буквы как на QWERTY · ESC — выйти</p>
-
-    </div>
-
-
-
-    <div v-else-if="state.atComputer" class="hud__shop-panel hud__shop-panel--computer">
-
-      <strong>Компьютер</strong>
-
-      <p>Нажми E чтобы ввести код</p>
-
+      <p v-else class="hud__shop-key">Нажми E чтобы ввести код</p>
     </div>
 
 
@@ -245,13 +251,19 @@ function formatTime(seconds: number): string {
 
       <strong>Магазин ламп</strong>
 
-      <p v-if="state.hasLamp">Лампа уже куплена</p>
+      <p v-if="state.hasLamp && state.hasExpandedLamp">Лампа куплена · радиус увеличен</p>
+
+      <p v-else-if="state.hasLamp">Лампа уже куплена</p>
 
       <template v-else>
 
         <p>Лампа: {{ LAMP_COST }} прочных блоков</p>
 
-        <p class="hud__shop-hint">Освещает область вокруг крота в тёмных землях</p>
+        <p class="hud__shop-hint">
+          Радиус {{ LAMP_RADIUS }} клеток
+          <template v-if="state.hasExpandedLamp"> → {{ LAMP_RADIUS_BOOSTED }}</template>
+          · код спрятан в алмазных землях
+        </p>
 
         <p class="hud__shop-key">Нажми F чтобы купить</p>
 
@@ -293,9 +305,13 @@ function formatTime(seconds: number): string {
 
         </p>
 
-        <p class="hud__shop-hint">Алмазы — 1 удар</p>
+        <p class="hud__shop-hint">Алмазы — 1 удар · код буста спрятан в алмазных землях</p>
 
-        <p class="hud__shop-key">Нажми F чтобы купить</p>
+        <p class="hud__shop-key">F — купить</p>
+
+        <p v-if="state.boostUnlocked" class="hud__shop-hint">
+          B — буст ({{ BOOST_DURATION }}с, перезарядка {{ BOOST_COOLDOWN }}с)
+        </p>
 
       </template>
 
@@ -303,11 +319,14 @@ function formatTime(seconds: number): string {
 
 
 
-    <p v-else class="hud__hint">
+    <p v-else-if="!state.atComputer && !state.usingComputer" class="hud__hint">
 
       Копай вниз по шахте · Справа — железо · Тёмные алмазные земли внизу
 
-      <template v-if="state.ropeCount > 0"> · R — верёвка в колонке</template>
+      <template v-if="state.ropeCount > 0"> · R — верёвка</template>
+      <template v-if="state.boostUnlocked && !state.boostActive && state.boostCooldownLeft <= 0">
+        · B — буст
+      </template>
 
     </p>
 
