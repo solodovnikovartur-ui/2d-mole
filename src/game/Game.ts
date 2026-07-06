@@ -690,7 +690,9 @@ export class Game {
       this.codeInput = "";
       return;
     }
-    const match = this.hiddenCodes.find((entry) => entry.code === this.codeInput);
+    const match =
+      this.hiddenCodes.find((entry) => entry.code === this.codeInput) ??
+      this.bookEntries.find((entry) => entry.code === this.codeInput);
     if (!match) {
       this.setCodeMessage("Неверный код", 8);
       this.codeInput = "";
@@ -831,7 +833,6 @@ export class Game {
       });
       this.setCodeMessage(`Код найден! Записан в книжку (${codeTypeLabel(entry.type)})`);
     }
-    this.hiddenCodes = this.hiddenCodes.filter((hidden) => hidden.col !== col || hidden.row !== row);
     this.codeMap.delete(codeKey(col, row));
     this.secretTrails = this.secretTrails.filter(
       (trail) => trail.target.x !== col || trail.target.y !== row,
